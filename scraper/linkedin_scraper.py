@@ -264,6 +264,17 @@ def _parse_post_date(raw_date: str) -> str:
     if not raw_date:
         return datetime.now(timezone.utc).isoformat()
 
+    # Some actors return date as a dict — extract a usable string from it
+    if isinstance(raw_date, dict):
+        raw_date = (
+            raw_date.get("date") or raw_date.get("timestamp") or
+            raw_date.get("text") or raw_date.get("value") or ""
+        )
+    if not raw_date:
+        return datetime.now(timezone.utc).isoformat()
+
+    raw_date = str(raw_date).strip()
+
     # Try standard ISO parsing
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S%z"):
         try:
