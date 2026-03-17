@@ -20,7 +20,8 @@ from apify_client import ApifyClient
 from config.config import AppConfig
 
 # Apify actor to use for LinkedIn post search
-_APIFY_ACTOR_ID = "apify/linkedin-post-search-scraper"
+# apimaestro/linkedin-posts-search-scraper-no-cookies — 6.9K users, 4.5★, no login required
+_APIFY_ACTOR_ID = "apimaestro/linkedin-posts-search-scraper-no-cookies"
 
 # Timeout for a single Apify actor run in seconds
 _ACTOR_TIMEOUT_SECS = 120
@@ -132,11 +133,14 @@ def _run_apify_actor(
         List of raw Apify result dicts, or [] on any failure.
     """
     client = ApifyClient(config.apify_api_token)
+    # Input schema for apimaestro/linkedin-posts-search-scraper-no-cookies:
+    # keyword, sort_type, date_filter ("past-24h"), limit (max 50 per page), total_posts
     run_input = {
-        "keywords": keyword,
-        "country": country,
-        "maxResults": config.max_posts_per_country,
-        "datePosted": "past-24h",
+        "keyword": f"{keyword} {country}",
+        "sort_type": "date_posted",
+        "date_filter": "past-24h",
+        "limit": min(config.max_posts_per_country, 50),
+        "total_posts": config.max_posts_per_country,
     }
 
     try:
@@ -195,15 +199,21 @@ def _normalize_post(
     Returns:
         Normalized RawPost or None if the post is malformed.
     """
-    post_url = raw.get("url") or raw.get("postUrl") or raw.get("id", "")
-    post_text = raw.get("text") or raw.get("postText") or raw.get("content", "")
+    # apimaestro actor output fields (with common fallbacks for other actors)
+    post_url = (
+        raw.get("postUrl") or raw.get("url") or raw.get("post_url") or raw.get("id", "")
+    )
+    post_text = (
+        raw.get("text") or raw.get("postText") or raw.get("post_text") or raw.get("content", "")
+    )
 
     if not post_url or not post_text:
         return None
 
-    # Parse post date — Apify may return ISO strings or relative strings
+    # Parse post date
     raw_date = (
         raw.get("postedAt")
+        or raw.get("posted_at")
         or raw.get("publishedAt")
         or raw.get("date")
         or raw.get("createdAt")
@@ -211,15 +221,16 @@ def _normalize_post(
     )
     post_date_iso = _parse_post_date(raw_date)
 
+    # Author fields — apimaestro actor returns flat fields
     author = raw.get("author") or {}
-    if isinstance(author, str):
-        author_name = author
-        author_title = ""
-        author_profile_url = ""
+    if isinstance(author, dict):
+        author_name = author.get("name") or author.get("fullName") or raw.get("authorName", "")
+        author_title = author.get("title") or author.get("headline") or raw.get("authorHeadline", "")
+        author_profile_url = author.get("url") or author.get("profileUrl") or raw.get("authorUrl", "")
     else:
-        author_name = author.get("name") or raw.get("authorName", "")
-        author_title = author.get("title") or author.get("headline") or raw.get("authorTitle", "")
-        author_profile_url = author.get("url") or author.get("profileUrl") or raw.get("authorProfileUrl", "")
+        author_name = raw.get("authorName") or raw.get("author_name") or str(author)
+        author_title = raw.get("authorHeadline") or raw.get("authorTitle") or raw.get("author_title", "")
+        author_profile_url = raw.get("authorUrl") or raw.get("authorProfileUrl") or raw.get("author_profile_url", "")
 
     return RawPost(
         post_url=post_url,
@@ -228,8 +239,8 @@ def _normalize_post(
         author_profile_url=author_profile_url,
         post_text=post_text,
         post_date=post_date_iso,
-        likes_count=int(raw.get("likesCount") or raw.get("likes") or 0),
-        comments_count=int(raw.get("commentsCount") or raw.get("comments") or 0),
+        likes_count=int(raw.get("likesCount") or raw.get("likes") or raw.get("num_likes") or 0),
+        comments_count=int(raw.get("commentsCount") or raw.get("comments") or raw.get("num_comments") or 0),
         contact_info=_extract_contact_info(post_text),
         country=country,
         keyword=keyword,
