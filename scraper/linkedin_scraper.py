@@ -74,7 +74,8 @@ def scrape_all_countries(config: AppConfig, logger: logging.Logger) -> List[RawP
     seen_urls: set = set()
     seen_text_hashes: set = set()
     all_posts: List[RawPost] = []
-    date_str = datetime.utcnow().strftime("%Y-%m-%d")
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    apify_failures = 0
 
     pairs = [
         (country, keyword)
@@ -105,6 +106,7 @@ def scrape_all_countries(config: AppConfig, logger: logging.Logger) -> List[RawP
                     done_count, total, country, keyword, exc,
                 )
                 raw_items = []
+                apify_failures += 1
 
             batch_added = 0
             for item in raw_items:
@@ -133,6 +135,10 @@ def scrape_all_countries(config: AppConfig, logger: logging.Logger) -> List[RawP
                 done_count, total, batch_added, country, keyword,
             )
 
+    if apify_failures:
+        logger.warning(
+            "[scraper] %d/%d Apify batches failed — results may be incomplete.", apify_failures, total
+        )
     logger.info("[scraper] total unique posts within 24h: %d", len(all_posts))
     _save_raw_posts(all_posts, date_str, logger)
     return all_posts

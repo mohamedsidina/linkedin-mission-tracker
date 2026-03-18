@@ -82,6 +82,11 @@ def load_config() -> AppConfig:
             "settings.json must contain either 'LINKEDIN_PROFILES' (list) or 'MY_LINKEDIN_URL' (string)."
         )
 
+    if not settings.get("TARGET_COUNTRIES"):
+        raise EnvironmentError("TARGET_COUNTRIES is empty or missing in settings.json.")
+    if not settings.get("SEARCH_KEYWORDS"):
+        raise EnvironmentError("SEARCH_KEYWORDS is empty or missing in settings.json.")
+
     return AppConfig(
         apify_api_token=apify_api_token,
         anthropic_api_key=anthropic_api_key,

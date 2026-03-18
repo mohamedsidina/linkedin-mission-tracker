@@ -41,11 +41,12 @@ _MAX_CONCURRENT_SCORING = 5
 _WORKER_DELAY_MIN = 0.3
 _WORKER_DELAY_MAX = 1.0
 
-# Fallback profile vector used when a LinkedIn profile fetch fails
+# Fallback profile vector used when a LinkedIn profile fetch fails.
+# Intentionally generic — a hardcoded personal name would be wrong for other users.
 _FALLBACK_PROFILE = (
-    "Mohamed Sid Ahmed — Freelance Consultant. "
+    "Freelance Consultant. "
     "Skills: Strategy, Digital Transformation, Project Management, Data Analysis, "
-    "Business Development, Consulting, Python, SQL, Agile."
+    "Business Development, Consulting, Python, SQL, Agile, Innovation."
 )
 
 # Realistic browser User-Agent for profile fetch
@@ -111,10 +112,17 @@ def score_posts(
         return []
 
     # Pre-filter: skip posts with no mission-related signal
-    candidates = [p for p in raw_posts if _is_potential_mission(p.get("post_text", ""))]
+    candidates = []
+    for p in raw_posts:
+        if _is_potential_mission(p.get("post_text", "")):
+            candidates.append(p)
+        else:
+            logger.debug(
+                "[matcher] Pre-filter dropped (no mission signal): %s", p.get("post_url", "")
+            )
     logger.info(
-        "[matcher] Pre-filter: %d/%d posts pass mission signal check.",
-        len(candidates), len(raw_posts),
+        "[matcher] Pre-filter: %d/%d posts pass mission signal check (%d dropped).",
+        len(candidates), len(raw_posts), len(raw_posts) - len(candidates),
     )
 
     if not candidates:
@@ -136,6 +144,8 @@ def score_posts(
     anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
     total = len(candidates)
     enriched: List[EnrichedPost] = []
+    claude_failures = 0
+    empty_extractions = 0
 
     logger.info(
         "[matcher] Scoring %d posts with %d concurrent workers...",
@@ -157,31 +167,51 @@ def score_posts(
                     post.get("post_url", ""), exc,
                 )
                 claude_data = _make_error_enrichment(profiles)
+                claude_failures += 1
 
+            score = float(claude_data.get("match_score", 0))
             logger.info(
                 "[matcher] Scored %d/%d — score=%.1f url=%s",
-                done_count, total,
-                float(claude_data.get("match_score", 0)),
-                post.get("post_url", ""),
+                done_count, total, score, post.get("post_url", ""),
             )
+
+            # Warn when Claude failed to extract any mission structure
+            title = claude_data.get("mission_title", "")
+            skills = claude_data.get("required_skills", [])
+            if not title and not skills and score > 0:
+                logger.warning(
+                    "[matcher] Claude returned score=%.1f but no title/skills for %s — may be a false positive.",
+                    score, post.get("post_url", ""),
+                )
+                empty_extractions += 1
 
             scored_at = datetime.now(timezone.utc).isoformat()
             enriched_post = EnrichedPost(
                 **post,
-                mission_title=claude_data.get("mission_title", ""),
-                required_skills=claude_data.get("required_skills", []),
+                mission_title=title,
+                required_skills=skills,
                 duration=claude_data.get("duration", ""),
                 daily_rate_tjm=claude_data.get("daily_rate_tjm"),
                 location=claude_data.get("location", ""),
                 remote_ok=bool(claude_data.get("remote_ok", False)),
                 claude_contact_info=claude_data.get("contact_info"),
-                match_score=float(claude_data.get("match_score", 0)),
+                match_score=score,
                 match_reasons=claude_data.get("match_reasons", []),
                 language=claude_data.get("language", "FR"),
                 profil_name=claude_data.get("best_profil", profiles[0]["name"] if profiles else ""),
                 scored_at=scored_at,
             )
             enriched.append(enriched_post)
+
+    # Summarise failures
+    if claude_failures:
+        logger.warning(
+            "[matcher] %d/%d Claude scoring calls failed (returned error defaults).", claude_failures, total
+        )
+    if empty_extractions:
+        logger.warning(
+            "[matcher] %d posts scored >0 but Claude extracted no title or skills — review prompts.", empty_extractions
+        )
 
     # Filter then sort
     before = len(enriched)
@@ -377,13 +407,26 @@ def _build_claude_prompt(post_text: str, profiles: List[Dict[str, str]]) -> str:
     """
     if len(profiles) == 1:
         profile_section = f"## Consultant Profile ({profiles[0]['name']}):\n{profiles[0]['vector']}"
+        scoring_instructions = (
+            f"Score how well this profile matches the mission requirements (0-100).\n"
+            f"Set best_profil to \"{profiles[0]['name']}\"."
+        )
         best_profil_field = f'  "best_profil": "{profiles[0]["name"]}",\n'
     else:
         profile_section = "## Consultant Profiles:\n"
+        profile_names = []
         for p in profiles:
             profile_section += f"### {p['name']}:\n{p['vector']}\n\n"
+            profile_names.append(p["name"])
+        names_str = ", ".join(f'"{n}"' for n in profile_names)
+        scoring_instructions = (
+            f"Score each profile independently against the mission requirements (0-100). "
+            f"Then set best_profil to the name of the profile with the highest individual score, "
+            f"and set match_score to that highest score. "
+            f"Profile names to choose from: {names_str}."
+        )
         best_profil_field = (
-            '  "best_profil": "string — name of the profile with the highest match score",\n'
+            f'  "best_profil": "one of {names_str} — the profile with the highest individual match score",\n'
         )
 
     return f"""You are analyzing a LinkedIn post that may describe a freelance mission opportunity.
@@ -394,7 +437,8 @@ def _build_claude_prompt(post_text: str, profiles: List[Dict[str, str]]) -> str:
 {profile_section}
 
 ## Task:
-Extract mission details from the post and score how well each consultant profile matches.
+1. Extract mission details (title, skills, duration, rate, location, contact).
+2. {scoring_instructions}
 
 Respond with ONLY a valid JSON object — no preamble, no markdown fences, no explanation.
 
@@ -404,11 +448,11 @@ Respond with ONLY a valid JSON object — no preamble, no markdown fences, no ex
   "required_skills": ["list", "of", "skills", "mentioned", "in", "the", "post"],
   "duration": "string — mission duration or contract length (e.g. '3 months', 'CDI', 'unknown')",
   "daily_rate_tjm": "string or null — daily rate if explicitly mentioned (e.g. '600€/jour'), null otherwise",
-  "location": "string — city or country of the mission (e.g. 'Paris', 'Remote', 'Casablanca')",
-  "remote_ok": "boolean — true if remote work is mentioned or implied",
+  "location": "string — city of the mission (e.g. 'Paris', 'Casablanca') or 'Remote' if fully remote",
+  "remote_ok": "boolean — true if remote work is explicitly mentioned or implied",
   "contact_info": "string or null — email or contact method from the post, null if none",
-{best_profil_field}  "match_score": "float 0-100 — best match score across all profiles",
-  "match_reasons": ["top 3 concise reasons explaining the score"],
+{best_profil_field}  "match_score": "float 0-100 — match score for best_profil",
+  "match_reasons": ["top 3 concise reasons explaining the score, referencing specific skills"],
   "language": "FR or EN — language of the post"
 }}
 
