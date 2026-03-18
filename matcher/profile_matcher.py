@@ -24,10 +24,15 @@ from typing import Any, Dict, List, Optional
 
 import anthropic
 import requests
+from apify_client import ApifyClient
 from bs4 import BeautifulSoup
 
 from config.config import AppConfig
 from scraper.linkedin_scraper import RawPost
+
+# Apify actor for LinkedIn profile scraping (no cookies required)
+_APIFY_PROFILE_ACTOR_ID = "apimaestro/linkedin-profile-batch-scraper-no-cookies-required"
+_PROFILE_ACTOR_TIMEOUT_SECS = 120
 
 # Claude model for scoring — fast and cost-efficient
 _CLAUDE_MODEL = "claude-haiku-4-5-20251001"
@@ -129,17 +134,29 @@ def score_posts(
         logger.warning("[matcher] All posts filtered out. Check search keywords.")
         return []
 
-    # Build profile vectors (one HTTP fetch per profile)
+    # Build profile vectors — try Apify actor first, fall back to HTTP scrape
     profiles: List[Dict[str, str]] = []
     for profile_cfg in config.linkedin_profiles:
-        logger.info("[matcher] Fetching LinkedIn profile '%s'...", profile_cfg["name"])
-        html = _fetch_linkedin_profile(profile_cfg["url"], logger)
-        vector = _build_profile_vector(html)
+        logger.info("[matcher] Fetching LinkedIn profile '%s' via Apify...", profile_cfg["name"])
+        apify_data = _fetch_profile_via_apify(config.apify_api_token, profile_cfg["url"], logger)
+        if apify_data:
+            vector = _build_profile_vector_from_apify(apify_data)
+            logger.info(
+                "[matcher] Profile '%s' vector built from Apify (%d chars).",
+                profile_cfg["name"], len(vector),
+            )
+        else:
+            logger.warning(
+                "[matcher] Apify profile fetch failed for '%s' — falling back to HTTP scrape.",
+                profile_cfg["name"],
+            )
+            html = _fetch_linkedin_profile(profile_cfg["url"], logger)
+            vector = _build_profile_vector(html)
+            logger.info(
+                "[matcher] Profile '%s' vector built from HTTP fallback (%d chars).",
+                profile_cfg["name"], len(vector),
+            )
         profiles.append({"name": profile_cfg["name"], "vector": vector})
-        logger.info(
-            "[matcher] Profile '%s' vector built (%d chars).",
-            profile_cfg["name"], len(vector),
-        )
 
     anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
     total = len(candidates)
@@ -240,6 +257,163 @@ def _is_potential_mission(text: str) -> bool:
     """
     tl = text.lower()
     return any(signal in tl for signal in _MISSION_SIGNALS)
+
+
+def _fetch_profile_via_apify(
+    apify_api_token: str,
+    profile_url: str,
+    logger: logging.Logger,
+) -> Optional[Dict[str, Any]]:
+    """
+    Fetch a LinkedIn profile's structured data via the Apify actor
+    apimaestro/linkedin-profile-batch-scraper-no-cookies-required.
+
+    Blocks until the run completes (SUCCEEDED) or times out (120s).
+    On any failure, logs a warning and returns None so the caller can fall back.
+
+    Args:
+        apify_api_token: Apify API token.
+        profile_url: Full LinkedIn profile URL.
+        logger: Logger instance.
+
+    Returns:
+        First item from the Apify dataset dict, or None on failure.
+    """
+    client = ApifyClient(apify_api_token)
+    run_input = {"profileUrls": [profile_url]}
+
+    try:
+        logger.debug("[matcher] Starting Apify profile actor — input: %s", run_input)
+        run = client.actor(_APIFY_PROFILE_ACTOR_ID).call(
+            run_input=run_input,
+            timeout_secs=_PROFILE_ACTOR_TIMEOUT_SECS,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[matcher] Apify profile actor call failed (%s): %s", profile_url, exc
+        )
+        return None
+
+    if run is None or run.get("status") != "SUCCEEDED":
+        status = run.get("status") if run else "None"
+        logger.warning(
+            "[matcher] Apify profile actor did not succeed (status=%s, url=%s)", status, profile_url
+        )
+        return None
+
+    dataset_id = run.get("defaultDatasetId")
+    if not dataset_id:
+        logger.warning("[matcher] No dataset ID returned for profile %s", profile_url)
+        return None
+
+    try:
+        items = client.dataset(dataset_id).list_items().items
+    except Exception as exc:
+        logger.error("[matcher] Failed to fetch profile dataset %s: %s", dataset_id, exc)
+        return None
+
+    if not items:
+        logger.warning("[matcher] Apify profile actor returned no items for %s", profile_url)
+        return None
+
+    logger.debug("[matcher] Apify profile actor returned %d item(s) for %s", len(items), profile_url)
+    return items[0]
+
+
+def _build_profile_vector_from_apify(data: Dict[str, Any]) -> str:
+    """
+    Build a plain-text profile vector from structured Apify profile data.
+
+    Extracts name, headline, about text, job titles from experience,
+    skills, and certifications. Returns _FALLBACK_PROFILE if nothing useful
+    is found.
+
+    Args:
+        data: Profile item dict returned by the Apify actor.
+
+    Returns:
+        Pipe-separated plain-text profile vector string.
+    """
+    parts: List[str] = []
+
+    # Basic info — may be nested under "basic_info" or flat at top level
+    basic = data.get("basic_info") or {}
+    if isinstance(basic, dict):
+        name = basic.get("fullname") or basic.get("name") or ""
+        headline = basic.get("headline") or basic.get("title") or ""
+        location = basic.get("location") or {}
+        if isinstance(location, dict):
+            loc_str = ", ".join(filter(None, [location.get("city"), location.get("country")]))
+        else:
+            loc_str = str(location) if location else ""
+    else:
+        # Flat structure fallback
+        name = data.get("fullname") or data.get("name") or ""
+        headline = data.get("headline") or data.get("title") or ""
+        loc_str = ""
+
+    for val in (name, headline, loc_str):
+        if val:
+            parts.append(val)
+
+    # About / summary
+    for field in ("about", "summary", "description"):
+        val = (
+            data.get(field)
+            or (basic.get(field) if isinstance(basic, dict) else None)
+            or ""
+        )
+        if val and isinstance(val, str):
+            parts.append(val[:500])
+            break
+
+    # Experience — extract job titles (+ company) for the first 5 roles
+    experience = data.get("experience") or []
+    if isinstance(experience, list):
+        for exp in experience[:5]:
+            if not isinstance(exp, dict):
+                continue
+            title = (
+                exp.get("title") or exp.get("role") or exp.get("position") or ""
+            )
+            company = (
+                exp.get("company") or exp.get("companyName") or exp.get("organization") or ""
+            )
+            if title:
+                parts.append(f"{title}" + (f" at {company}" if company else ""))
+
+    # Skills
+    skills = data.get("skills") or []
+    if isinstance(skills, list):
+        skill_names = []
+        for sk in skills[:20]:
+            if isinstance(sk, dict):
+                sk_name = sk.get("name") or sk.get("skill") or ""
+                if sk_name:
+                    skill_names.append(sk_name)
+            elif isinstance(sk, str) and sk:
+                skill_names.append(sk)
+        if skill_names:
+            parts.append("Skills: " + ", ".join(skill_names))
+
+    # Certifications
+    certs = data.get("certifications") or data.get("certificates") or []
+    if isinstance(certs, list):
+        cert_names = []
+        for c in certs[:5]:
+            if isinstance(c, dict):
+                cert_name = c.get("name") or c.get("title") or ""
+                if cert_name:
+                    cert_names.append(cert_name)
+            elif isinstance(c, str) and c:
+                cert_names.append(c)
+        if cert_names:
+            parts.append("Certifications: " + ", ".join(cert_names))
+
+    if not parts:
+        return _FALLBACK_PROFILE
+
+    return " | ".join(dict.fromkeys(p for p in parts if p))
 
 
 def _fetch_linkedin_profile(profile_url: str, logger: logging.Logger) -> str:
