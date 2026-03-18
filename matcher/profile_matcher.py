@@ -91,23 +91,82 @@ class EnrichedPost(dict):
     """
 
 
+def fetch_profile_vectors(
+    config: AppConfig,
+    logger: logging.Logger,
+    cached: Optional[Dict[str, str]] = None,
+) -> Dict[str, Dict[str, str]]:
+    """
+    Build profile vectors for all profiles in config.
+
+    For each profile URL already present in `cached`, re-uses the stored
+    vector without calling Apify. For missing profiles, calls the Apify
+    actor and falls back to HTTP scrape if Apify fails.
+
+    Args:
+        config: Application configuration (provides linkedin_profiles + apify_api_token).
+        logger: Logger instance.
+        cached: Optional dict mapping URL → vector text already loaded from cache.
+
+    Returns:
+        Dict mapping URL → {"name": str, "vector": str} for all profiles.
+        Only entries NOT previously in `cached` are newly fetched (so the caller
+        can identify which ones need saving to the sheet cache).
+    """
+    cached = cached or {}
+    result: Dict[str, Dict[str, str]] = {}
+
+    for p in config.linkedin_profiles:
+        url = p["url"]
+        name = p["name"]
+
+        if url in cached:
+            logger.info(
+                "[matcher] Profile '%s' loaded from sheet cache (%d chars).",
+                name, len(cached[url]),
+            )
+            result[url] = {"name": name, "vector": cached[url]}
+            continue
+
+        # Not cached — fetch via Apify
+        logger.info("[matcher] Profile '%s' not cached — fetching via Apify...", name)
+        apify_data = _fetch_profile_via_apify(config.apify_api_token, url, logger)
+        if apify_data:
+            vector = _build_profile_vector_from_apify(apify_data)
+            logger.info("[matcher] Profile '%s' fetched via Apify (%d chars).", name, len(vector))
+        else:
+            logger.warning(
+                "[matcher] Apify fetch failed for '%s' — falling back to HTTP scrape.", name
+            )
+            html = _fetch_linkedin_profile(url, logger)
+            vector = _build_profile_vector(html)
+            logger.info("[matcher] Profile '%s' built from HTTP fallback (%d chars).", name, len(vector))
+
+        result[url] = {"name": name, "vector": vector}
+
+    return result
+
+
 def score_posts(
     raw_posts: List[RawPost],
     config: AppConfig,
     logger: logging.Logger,
+    profile_vectors: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> List[EnrichedPost]:
     """
     Main entry point for the matcher module.
 
-    Pre-filters posts, fetches all LinkedIn profile vectors in parallel,
-    scores each post against all profiles with concurrent Claude workers,
-    filters out posts with match_score < MIN_MATCH_SCORE, and returns
-    the remaining posts sorted by match_score descending.
+    Pre-filters posts, builds/uses profile vectors, scores each post against
+    all profiles with concurrent Claude workers, filters out posts with
+    match_score < MIN_MATCH_SCORE, and returns the remaining posts sorted
+    by match_score descending.
 
     Args:
         raw_posts: List of raw posts from the scraper.
         config: Application configuration.
         logger: Logger instance.
+        profile_vectors: Optional pre-built vectors dict from fetch_profile_vectors().
+            If None, vectors are fetched internally (backwards-compatible).
 
     Returns:
         Filtered, sorted list of EnrichedPost dicts.
@@ -134,29 +193,16 @@ def score_posts(
         logger.warning("[matcher] All posts filtered out. Check search keywords.")
         return []
 
-    # Build profile vectors — try Apify actor first, fall back to HTTP scrape
-    profiles: List[Dict[str, str]] = []
-    for profile_cfg in config.linkedin_profiles:
-        logger.info("[matcher] Fetching LinkedIn profile '%s' via Apify...", profile_cfg["name"])
-        apify_data = _fetch_profile_via_apify(config.apify_api_token, profile_cfg["url"], logger)
-        if apify_data:
-            vector = _build_profile_vector_from_apify(apify_data)
-            logger.info(
-                "[matcher] Profile '%s' vector built from Apify (%d chars).",
-                profile_cfg["name"], len(vector),
-            )
-        else:
-            logger.warning(
-                "[matcher] Apify profile fetch failed for '%s' — falling back to HTTP scrape.",
-                profile_cfg["name"],
-            )
-            html = _fetch_linkedin_profile(profile_cfg["url"], logger)
-            vector = _build_profile_vector(html)
-            logger.info(
-                "[matcher] Profile '%s' vector built from HTTP fallback (%d chars).",
-                profile_cfg["name"], len(vector),
-            )
-        profiles.append({"name": profile_cfg["name"], "vector": vector})
+    # Build profile list from pre-built vectors or fetch on the fly
+    if profile_vectors:
+        profiles = [
+            {"name": info["name"], "vector": info["vector"]}
+            for info in profile_vectors.values()
+        ]
+    else:
+        # Backwards-compatible: fetch profiles inline (no cache)
+        fetched = fetch_profile_vectors(config, logger)
+        profiles = [{"name": info["name"], "vector": info["vector"]} for info in fetched.values()]
 
     anthropic_client = anthropic.Anthropic(api_key=config.anthropic_api_key)
     total = len(candidates)

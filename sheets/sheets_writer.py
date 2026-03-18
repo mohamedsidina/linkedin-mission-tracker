@@ -56,6 +56,10 @@ _COLOR_RED = {"red": 0.957, "green": 0.780, "blue": 0.765}     # #f4c7c3
 # Config tab name
 _CONFIG_TAB = "Paramètres"
 
+# Profile vector cache tab name
+_PROFILES_CACHE_TAB = "Profils_Cache"
+_PROFILES_CACHE_HEADERS = ["profile_name", "url", "vector", "fetched_at"]
+
 
 def sync_config_tab(
     config: AppConfig,
@@ -117,6 +121,118 @@ def sync_config_tab(
         min_match_score=int(min_score),
         max_posts_per_country=int(max_posts),
     )
+
+
+def load_profile_vectors(
+    config: AppConfig,
+    logger: logging.Logger,
+) -> Dict[str, str]:
+    """
+    Read cached profile vectors from the "Profils_Cache" sheet tab.
+
+    Returns a dict mapping LinkedIn profile URL → vector text for every
+    cached profile found. Returns an empty dict if the tab does not exist,
+    is empty, or authentication fails.
+
+    Args:
+        config: Application configuration (provides spreadsheet_id + credentials).
+        logger: Logger instance.
+
+    Returns:
+        Dict mapping URL strings to their cached vector text strings.
+    """
+    try:
+        service = _get_sheets_service(config.google_service_account_json)
+    except Exception as exc:
+        logger.warning("[sheets] load_profile_vectors: auth failed — no cache. %s", exc)
+        return {}
+
+    try:
+        spreadsheet = service.spreadsheets().get(spreadsheetId=config.spreadsheet_id).execute()
+        existing_tabs = {s["properties"]["title"] for s in spreadsheet.get("sheets", [])}
+        if _PROFILES_CACHE_TAB not in existing_tabs:
+            logger.info("[sheets] '%s' tab not found — cache is empty.", _PROFILES_CACHE_TAB)
+            return {}
+
+        result = service.spreadsheets().values().get(
+            spreadsheetId=config.spreadsheet_id,
+            range=f"'{_PROFILES_CACHE_TAB}'!A:D",
+        ).execute()
+    except Exception as exc:
+        logger.warning("[sheets] Could not read '%s' tab: %s", _PROFILES_CACHE_TAB, exc)
+        return {}
+
+    rows = result.get("values", [])
+    cache: Dict[str, str] = {}
+    for row in rows[1:]:  # skip header
+        if len(row) >= 3:
+            url = str(row[1]).strip()
+            vector = str(row[2]).strip()
+            if url and vector:
+                cache[url] = vector
+
+    logger.info("[sheets] Loaded %d cached profile vector(s) from '%s'.", len(cache), _PROFILES_CACHE_TAB)
+    return cache
+
+
+def save_profile_vectors(
+    vectors: Dict[str, Dict[str, str]],
+    config: AppConfig,
+    logger: logging.Logger,
+) -> None:
+    """
+    Write (or overwrite) profile vectors to the "Profils_Cache" sheet tab.
+
+    Creates the tab if it does not exist. Clears existing rows (except the
+    header) and rewrites all entries. Failure is logged as a warning — the
+    main pipeline is never blocked by a cache write error.
+
+    Args:
+        vectors: Dict mapping URL → {"name": str, "vector": str}.
+        config: Application configuration.
+        logger: Logger instance.
+    """
+    if not vectors:
+        return
+
+    try:
+        service = _get_sheets_service(config.google_service_account_json)
+    except Exception as exc:
+        logger.warning("[sheets] save_profile_vectors: auth failed — cache not saved. %s", exc)
+        return
+
+    try:
+        spreadsheet = service.spreadsheets().get(spreadsheetId=config.spreadsheet_id).execute()
+        existing_tabs = {s["properties"]["title"] for s in spreadsheet.get("sheets", [])}
+
+        if _PROFILES_CACHE_TAB not in existing_tabs:
+            body = {"requests": [{"addSheet": {"properties": {"title": _PROFILES_CACHE_TAB}}}]}
+            service.spreadsheets().batchUpdate(spreadsheetId=config.spreadsheet_id, body=body).execute()
+            logger.info("[sheets] Created '%s' tab.", _PROFILES_CACHE_TAB)
+
+        fetched_at = datetime.now(timezone.utc).isoformat()
+        rows = [_PROFILES_CACHE_HEADERS]
+        for url, info in vectors.items():
+            rows.append([info.get("name", ""), url, info.get("vector", ""), fetched_at])
+
+        # Overwrite from A1 (header + all data rows)
+        service.spreadsheets().values().update(
+            spreadsheetId=config.spreadsheet_id,
+            range=f"'{_PROFILES_CACHE_TAB}'!A1",
+            valueInputOption="RAW",
+            body={"values": rows},
+        ).execute()
+
+        # Clear any leftover rows below (in case previous cache had more profiles)
+        service.spreadsheets().values().clear(
+            spreadsheetId=config.spreadsheet_id,
+            range=f"'{_PROFILES_CACHE_TAB}'!A{len(rows) + 1}:D1000",
+        ).execute()
+
+        logger.info("[sheets] Saved %d profile vector(s) to '%s'.", len(vectors), _PROFILES_CACHE_TAB)
+
+    except Exception as exc:
+        logger.warning("[sheets] Could not save profile vectors to sheet: %s", exc)
 
 
 def _create_config_tab(

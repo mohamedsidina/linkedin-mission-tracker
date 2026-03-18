@@ -97,8 +97,8 @@ def main() -> None:
         # Import here so missing deps surface with a clear error after logging is set up
         from config.config import load_config
         from scraper import scrape_all_countries
-        from matcher import score_posts
-        from sheets import write_missions, sync_config_tab
+        from matcher import score_posts, fetch_profile_vectors
+        from sheets import write_missions, sync_config_tab, load_profile_vectors, save_profile_vectors
 
         # Step 1 — Config (fail fast)
         logger.info("[run] Loading configuration...")
@@ -115,6 +115,19 @@ def main() -> None:
             config.min_match_score,
         )
 
+        # Step 1c — Load cached profile vectors from sheet; fetch missing via Apify
+        logger.info("[run] Loading profile vectors (from cache or Apify)...")
+        cached_vectors = load_profile_vectors(config, logger)
+        profile_vectors = fetch_profile_vectors(config, logger, cached=cached_vectors)
+
+        # Save any newly fetched vectors back to the sheet for future runs
+        new_vectors = {url: info for url, info in profile_vectors.items() if url not in cached_vectors}
+        if new_vectors:
+            logger.info("[run] Saving %d new profile vector(s) to sheet cache...", len(new_vectors))
+            save_profile_vectors(profile_vectors, config, logger)
+        else:
+            logger.info("[run] All profile vectors loaded from cache — no Apify call needed.")
+
         # Step 2 — Scrape
         logger.info("[run] Starting Apify scraping...")
         raw_posts = scrape_all_countries(config, logger)
@@ -125,7 +138,7 @@ def main() -> None:
 
         # Step 3 — Score
         logger.info("[run] Starting Claude scoring...")
-        enriched_posts = score_posts(raw_posts, config, logger)
+        enriched_posts = score_posts(raw_posts, config, logger, profile_vectors=profile_vectors)
         logger.info(
             "[run] Scoring complete — %d posts scored >= %d.",
             len(enriched_posts), config.min_match_score,
