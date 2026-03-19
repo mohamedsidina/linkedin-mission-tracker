@@ -24,7 +24,7 @@ from matcher.profile_matcher import EnrichedPost
 # Google Sheets API scopes
 _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-# Column layout (A=0 … K=10)
+# Column layout (A=0 … M=12)
 _HEADERS = [
     "date",            # A — post publication date (YYYY-MM-DD)
     "heure",           # B — post publication hour (HH:MM)
@@ -37,6 +37,8 @@ _HEADERS = [
     "pays",            # I
     "ville",           # J
     "profil",          # K — LinkedIn profile name with best match
+    "match_reasons",   # L — why Claude gave this score
+    "feedback",        # M — user feedback (filled manually in sheet)
 ]
 
 # Column index (0-based) for match_score and post_url
@@ -351,6 +353,71 @@ def _read_config_tab(
     return overrides
 
 
+def load_feedback_examples(
+    config: AppConfig,
+    logger: logging.Logger,
+) -> List[Dict[str, str]]:
+    """
+    Read user feedback from all existing monthly mission tabs.
+
+    Scans every tab whose name matches the SHEET_TAB_FORMAT pattern and
+    collects rows where column M (feedback) is non-empty. Returns a list
+    of dicts with keys: mission_title, required_skills, feedback.
+
+    Used to inject past corrections into Claude's scoring prompt so the
+    model learns from explicit user feedback across runs.
+
+    Args:
+        config: Application configuration.
+        logger: Logger instance.
+
+    Returns:
+        List of feedback dicts, empty list on any failure.
+    """
+    try:
+        service = _get_sheets_service(config.google_service_account_json)
+        spreadsheet = service.spreadsheets().get(spreadsheetId=config.spreadsheet_id).execute()
+    except Exception as exc:
+        logger.warning("[sheets] load_feedback_examples: auth failed — %s", exc)
+        return []
+
+    # Identify all monthly mission tabs (e.g. "Missions_2026-03")
+    tab_prefix = config.sheet_tab_format.split("{")[0]  # e.g. "Missions_"
+    mission_tabs = [
+        s["properties"]["title"]
+        for s in spreadsheet.get("sheets", [])
+        if s["properties"]["title"].startswith(tab_prefix)
+    ]
+
+    examples: List[Dict[str, str]] = []
+    for tab in mission_tabs:
+        try:
+            result = service.spreadsheets().values().get(
+                spreadsheetId=config.spreadsheet_id,
+                range=f"'{tab}'!A:M",
+            ).execute()
+        except Exception as exc:
+            logger.warning("[sheets] Could not read tab '%s' for feedback: %s", tab, exc)
+            continue
+
+        rows = result.get("values", [])
+        for row in rows[1:]:  # skip header
+            # Column M is index 12; skip rows that don't reach it
+            if len(row) < 13:
+                continue
+            feedback = str(row[12]).strip()
+            if not feedback:
+                continue
+            examples.append({
+                "mission_title": str(row[3]).strip() if len(row) > 3 else "",
+                "required_skills": str(row[4]).strip() if len(row) > 4 else "",
+                "feedback": feedback,
+            })
+
+    logger.info("[sheets] Loaded %d feedback example(s) from %d tab(s).", len(examples), len(mission_tabs))
+    return examples
+
+
 def write_missions(
     enriched_posts: List[EnrichedPost],
     config: AppConfig,
@@ -481,6 +548,8 @@ def _get_or_create_tab(
         props = sheet.get("properties", {})
         if props.get("title") == tab_name:
             logger.debug("[sheets] Tab '%s' already exists (gid=%d).", tab_name, props["sheetId"])
+            # Always refresh the header row so new columns are added to existing tabs
+            _write_header_row(service, spreadsheet_id, tab_name)
             return props["sheetId"]
 
     # Create the tab
@@ -497,7 +566,7 @@ def _get_or_create_tab(
 
 def _write_header_row(service: Any, spreadsheet_id: str, tab_name: str) -> None:
     """
-    Write the 10-column header row to a newly created tab.
+    Write the header row to the tab, reflecting the current _HEADERS list.
 
     Args:
         service: Authenticated Sheets service.
@@ -595,6 +664,10 @@ def _build_row(post: EnrichedPost) -> List[Any]:
     if isinstance(required_skills, list):
         required_skills = ", ".join(required_skills)
 
+    match_reasons = post.get("match_reasons", [])
+    if isinstance(match_reasons, list):
+        match_reasons = " | ".join(match_reasons)
+
     return [
         post_date,                               # A: date
         post_hour,                               # B: heure
@@ -607,6 +680,8 @@ def _build_row(post: EnrichedPost) -> List[Any]:
         post.get("country", ""),                 # I: pays
         post.get("location", ""),                # J: ville
         post.get("profil_name", ""),             # K: profil
+        match_reasons,                           # L: match_reasons
+        "",                                      # M: feedback (filled by user)
     ]
 
 

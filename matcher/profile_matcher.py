@@ -152,6 +152,7 @@ def score_posts(
     config: AppConfig,
     logger: logging.Logger,
     profile_vectors: Optional[Dict[str, Dict[str, str]]] = None,
+    feedback_examples: Optional[List[Dict[str, str]]] = None,
 ) -> List[EnrichedPost]:
     """
     Main entry point for the matcher module.
@@ -167,6 +168,9 @@ def score_posts(
         logger: Logger instance.
         profile_vectors: Optional pre-built vectors dict from fetch_profile_vectors().
             If None, vectors are fetched internally (backwards-compatible).
+        feedback_examples: Optional list of past user feedback dicts
+            (keys: mission_title, required_skills, feedback). Injected into
+            the Claude prompt as few-shot corrections.
 
     Returns:
         Filtered, sorted list of EnrichedPost dicts.
@@ -217,7 +221,10 @@ def score_posts(
 
     with ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_SCORING) as executor:
         future_to_post = {
-            executor.submit(_score_post_with_claude, post, profiles, anthropic_client, logger): post
+            executor.submit(
+                _score_post_with_claude, post, profiles, anthropic_client, logger,
+                feedback_examples or [],
+            ): post
             for post in candidates
         }
         for done_count, future in enumerate(as_completed(future_to_post), start=1):
@@ -232,11 +239,20 @@ def score_posts(
                 claude_data = _make_error_enrichment(profiles)
                 claude_failures += 1
 
+            # Force score=0 for posts that are not genuine mission offers
+            if not claude_data.get("is_genuine_mission", True):
+                claude_data["match_score"] = 0.0
+                logger.info(
+                    "[matcher] Scored %d/%d — score=0.0 (not a genuine mission) url=%s",
+                    done_count, total, post.get("post_url", ""),
+                )
+            else:
+                score = float(claude_data.get("match_score", 0))
+                logger.info(
+                    "[matcher] Scored %d/%d — score=%.1f url=%s",
+                    done_count, total, score, post.get("post_url", ""),
+                )
             score = float(claude_data.get("match_score", 0))
-            logger.info(
-                "[matcher] Scored %d/%d — score=%.1f url=%s",
-                done_count, total, score, post.get("post_url", ""),
-            )
 
             # Warn when Claude failed to extract any mission structure
             title = claude_data.get("mission_title", "")
@@ -555,6 +571,7 @@ def _score_post_with_claude(
     profiles: List[Dict[str, str]],
     anthropic_client: anthropic.Anthropic,
     logger: logging.Logger,
+    feedback_examples: Optional[List[Dict[str, str]]] = None,
 ) -> Dict[str, Any]:
     """
     Call the Claude API to extract structured mission data and compute a match score.
@@ -575,7 +592,7 @@ def _score_post_with_claude(
     # Stagger concurrent workers to avoid simultaneous API bursts
     time.sleep(random.uniform(_WORKER_DELAY_MIN, _WORKER_DELAY_MAX))
 
-    prompt = _build_claude_prompt(post.get("post_text", ""), profiles)
+    prompt = _build_claude_prompt(post.get("post_text", ""), profiles, feedback_examples or [])
     backoff_seconds = [10, 20, 40]
 
     for attempt in range(4):  # 1 initial + 3 retries
@@ -611,16 +628,22 @@ def _score_post_with_claude(
     return _make_error_enrichment(profiles)
 
 
-def _build_claude_prompt(post_text: str, profiles: List[Dict[str, str]]) -> str:
+def _build_claude_prompt(
+    post_text: str,
+    profiles: List[Dict[str, str]],
+    feedback_examples: Optional[List[Dict[str, str]]] = None,
+) -> str:
     """
     Construct the structured extraction prompt sent to Claude.
 
     For a single profile, uses a focused single-profile format.
     For multiple profiles, asks Claude to score each and identify the best match.
+    Injects past user feedback as few-shot corrections when provided.
 
     Args:
         post_text: Full text of the LinkedIn post.
         profiles: List of profile dicts with 'name' and 'vector' keys.
+        feedback_examples: Optional list of past feedback dicts to guide scoring.
 
     Returns:
         Complete prompt string.
@@ -649,6 +672,19 @@ def _build_claude_prompt(post_text: str, profiles: List[Dict[str, str]]) -> str:
             f'  "best_profil": "one of {names_str} — the profile with the highest individual match score",\n'
         )
 
+    # Build feedback section from past user corrections
+    feedback_section = ""
+    if feedback_examples:
+        lines = [
+            "## Retours utilisateur sur vos suggestions précédentes (apprenez de ces exemples) :",
+        ]
+        for ex in feedback_examples[:15]:  # cap to avoid prompt bloat
+            title = ex.get("mission_title", "?")
+            skills = ex.get("required_skills", "")
+            fb = ex.get("feedback", "")
+            lines.append(f'- "{title}" ({skills}) → Retour utilisateur : "{fb}"')
+        feedback_section = "\n".join(lines) + "\n\n"
+
     return f"""You are analyzing a LinkedIn post that may describe a freelance mission opportunity.
 
 ## LinkedIn Post:
@@ -656,33 +692,47 @@ def _build_claude_prompt(post_text: str, profiles: List[Dict[str, str]]) -> str:
 
 {profile_section}
 
-## Task:
-1. Extract mission details (title, skills, duration, rate, location, contact).
-2. {scoring_instructions}
+{feedback_section}## Task:
+1. Determine if this post is a GENUINE MISSION OFFER (a company, recruiter, or ESN seeking a freelancer).
+2. If genuine, extract mission details and score the profile match.
+3. If NOT genuine, set is_genuine_mission=false and match_score=0.
 
 Respond with ONLY a valid JSON object — no preamble, no markdown fences, no explanation.
 
 ## Required JSON fields:
 {{
-  "mission_title": "string — short title of the mission or role (e.g. 'Chef de projet Data')",
+  "is_genuine_mission": "boolean — TRUE only if a company/recruiter/ESN is SEEKING a freelancer. FALSE if: a freelancer advertises their own availability, a personal branding post, an opinion/news article, or any post NOT offering a mission to fill.",
+  "mission_title": "string — short title of the mission or role (e.g. 'Chef de projet Data'), empty string if not a genuine mission",
   "required_skills": ["list", "of", "skills", "mentioned", "in", "the", "post"],
   "duration": "string — mission duration or contract length (e.g. '3 months', 'CDI', 'unknown')",
   "daily_rate_tjm": "string or null — daily rate if explicitly mentioned (e.g. '600€/jour'), null otherwise",
   "location": "string — city of the mission (e.g. 'Paris', 'Casablanca') or 'Remote' if fully remote",
   "remote_ok": "boolean — true if remote work is explicitly mentioned or implied",
   "contact_info": "string or null — email or contact method from the post, null if none",
-{best_profil_field}  "match_score": "float 0-100 — match score for best_profil",
+{best_profil_field}  "match_score": "float 0-100 — match score for best_profil (must be 0 if is_genuine_mission=false)",
   "match_reasons": ["top 3 concise reasons explaining the score, referencing specific skills"],
   "language": "FR or EN — language of the post"
 }}
 
-## Scoring guidelines:
+## Critical rule — is_genuine_mission:
+Set is_genuine_mission=false (and match_score=0) when:
+- A freelancer or consultant announces THEIR OWN availability (e.g. "Je suis disponible pour une mission...")
+- The post is personal branding, self-promotion, or availability announcement
+- The post is an opinion, article, news, or general content not offering a specific role
+- The author IS the consultant, not the client
+
+Set is_genuine_mission=true only when:
+- A company, recruiter, manager, or ESN is explicitly LOOKING FOR someone to fill a role
+- The post describes a mission/role to be filled (skills required, duration, rate, location)
+
+## Scoring guidelines (only applies when is_genuine_mission=true):
 - 80-100: Strong match — most required skills are present in the profile
 - 50-79: Partial match — some relevant skills or domain overlap
 - 0-49: Weak match — few or no skill overlaps
 
-## Example output:
+## Example output (genuine mission):
 {{
+  "is_genuine_mission": true,
   "mission_title": "Chef de projet Digital",
   "required_skills": ["gestion de projet", "Agile", "Scrum", "transformation digitale"],
   "duration": "6 mois",
@@ -697,6 +747,22 @@ Respond with ONLY a valid JSON object — no preamble, no markdown fences, no ex
     "Digital Transformation expertise matches mission domain",
     "Agile/Scrum mentioned in both profile and post"
   ],
+  "language": "FR"
+}}
+
+## Example output (NOT a genuine mission — freelancer advertising themselves):
+{{
+  "is_genuine_mission": false,
+  "mission_title": "",
+  "required_skills": [],
+  "duration": "unknown",
+  "daily_rate_tjm": null,
+  "location": "",
+  "remote_ok": false,
+  "contact_info": null,
+  "best_profil": "{profiles[0]['name']}",
+  "match_score": 0,
+  "match_reasons": ["Post is a freelancer advertising their own availability, not a mission offer"],
   "language": "FR"
 }}"""
 
@@ -760,6 +826,7 @@ def _make_error_enrichment(profiles: List[Dict[str, str]]) -> Dict[str, Any]:
         Dict with all Claude fields set to safe defaults.
     """
     return {
+        "is_genuine_mission": False,
         "mission_title": "",
         "required_skills": [],
         "duration": "",
