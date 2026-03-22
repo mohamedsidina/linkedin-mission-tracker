@@ -220,7 +220,15 @@ def main() -> None:
 
         # Step 3c — Location filter: keep only posts in target countries (or unknown/remote)
         before_loc = len(enriched_posts)
-        enriched_posts = [p for p in enriched_posts if _passes_location_filter(p, config.target_countries)]
+        kept, dropped = [], []
+        for p in enriched_posts:
+            (kept if _passes_location_filter(p, config.target_countries) else dropped).append(p)
+        for p in dropped:
+            logger.info(
+                "[run] Location filter DROP — score=%.1f location='%s' url=%s",
+                p.get("match_score", 0), p.get("location", ""), p.get("post_url", ""),
+            )
+        enriched_posts = kept
         logger.info(
             "[run] Location filter: %d/%d posts kept (target countries: %s).",
             len(enriched_posts), before_loc, config.target_countries,
