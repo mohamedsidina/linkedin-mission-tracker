@@ -266,7 +266,11 @@ def _normalize_post(
         raw.get("text") or raw.get("postText") or raw.get("post_text") or raw.get("content", "")
     )
 
-    if not post_url or not post_text:
+    # Some Apify actors return text as a nested dict — extract the string value or skip
+    if isinstance(post_text, dict):
+        post_text = post_text.get("text") or post_text.get("content") or ""
+
+    if not post_url or not isinstance(post_text, str) or not post_text:
         return None
 
     raw_date = (
