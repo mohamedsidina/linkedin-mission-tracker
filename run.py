@@ -100,7 +100,8 @@ def _passes_location_filter(post: dict, target_countries: list) -> bool:
         True if the post should be kept, False if it should be filtered out.
     """
     location = post.get("location", "").strip().lower()
-    if not location:
+    # Treat missing or explicitly unknown location as "can't determine" → keep
+    if not location or location in ("unknown", "non spécifié", "non précisé", "n/a", "not specified"):
         return True
     if any(kw in location for kw in _REMOTE_KEYWORDS):
         return True
