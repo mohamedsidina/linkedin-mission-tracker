@@ -97,7 +97,7 @@ def main() -> None:
     try:
         # Import here so missing deps surface with a clear error after logging is set up
         from config.config import load_config
-        from scraper import scrape_all_countries
+        from scraper import scrape_all_countries, scrape_google
         from matcher import score_posts, fetch_profile_vectors
         from sheets import write_missions, sync_config_tab, load_profile_vectors, save_profile_vectors, load_feedback_examples, load_seen_posts_all_tabs
 
@@ -137,10 +137,21 @@ def main() -> None:
             len(seen_urls_global), len(seen_hashes_global),
         )
 
-        # Step 3 — Scrape (cross-run known posts filtered out before scoring)
+        # Step 3 — Scrape via Apify (cross-run known posts filtered out before scoring)
         logger.info("[run] Starting Apify scraping...")
         raw_posts = scrape_all_countries(config, logger, seen_urls=seen_urls_global, seen_hashes=seen_hashes_global)
-        logger.info("[run] Scraping complete — %d raw posts collected.", len(raw_posts))
+        logger.info("[run] Apify scraping complete — %d raw posts collected.", len(raw_posts))
+
+        # Step 3b — Google CSE fallback scraper (opt-in, enabled by GOOGLE_CSE_API_KEY + GOOGLE_CSE_ID)
+        if config.google_cse_api_key and config.google_cse_id:
+            logger.info("[run] Starting Google CSE scraping...")
+            google_posts = scrape_google(config, logger, seen_urls=seen_urls_global, seen_hashes=seen_hashes_global)
+            raw_posts.extend(google_posts)
+            logger.info("[run] Google CSE complete — %d additional posts.", len(google_posts))
+        else:
+            logger.info("[run] Google CSE scraper disabled (GOOGLE_CSE_API_KEY or GOOGLE_CSE_ID not set).")
+
+        logger.info("[run] Scraping complete — %d total raw posts collected.", len(raw_posts))
 
         if not raw_posts:
             logger.warning("[run] No posts scraped. Check Apify actor and keyword config.")

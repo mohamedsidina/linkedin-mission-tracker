@@ -9,7 +9,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -29,6 +29,10 @@ class AppConfig:
     min_match_score: int
     max_posts_per_country: int
     sheet_tab_format: str
+
+    # Optional — Google Custom Search API (opt-in fallback scraper)
+    google_cse_api_key: Optional[str] = None
+    google_cse_id: Optional[str] = None
 
 
 def load_config() -> AppConfig:
@@ -98,6 +102,8 @@ def load_config() -> AppConfig:
         min_match_score=min_match_score,
         max_posts_per_country=int(settings.get("MAX_POSTS_PER_COUNTRY", 50)),
         sheet_tab_format=settings.get("SHEET_TAB_FORMAT", "Missions_{YYYY-MM}"),
+        google_cse_api_key=os.getenv("GOOGLE_CSE_API_KEY") or None,
+        google_cse_id=os.getenv("GOOGLE_CSE_ID") or None,
     )
 
 
