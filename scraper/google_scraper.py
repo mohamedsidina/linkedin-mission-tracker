@@ -153,9 +153,14 @@ def _call_cse(api_key: str, cx: str, query: str, logger: logging.Logger) -> List
         return []
 
     if response.status_code != 200:
+        # Extract only error.message from JSON to avoid logging the redacted API key
+        try:
+            err_msg = response.json().get("error", {}).get("message", response.text[:100])
+        except Exception:
+            err_msg = response.text[:100]
         logger.warning(
-            "[google_scraper] HTTP %d from CSE API: %s",
-            response.status_code, response.text[:200],
+            "[google_scraper] HTTP %d from CSE API — %s",
+            response.status_code, err_msg,
         )
         return []
 
