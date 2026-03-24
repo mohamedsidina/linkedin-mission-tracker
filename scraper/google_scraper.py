@@ -64,6 +64,15 @@ def scrape_google(
         logger.info("[google_scraper] Skipped — GOOGLE_CSE_API_KEY or GOOGLE_CSE_ID not set.")
         return []
 
+    # Diagnostic: log key length and cx prefix so we can verify secrets without exposing values
+    logger.info(
+        "[google_scraper] DEBUG — api_key len=%d ends=...%s | cx='%s' (len=%d)",
+        len(config.google_cse_api_key),
+        config.google_cse_api_key[-4:],
+        config.google_cse_id,
+        len(config.google_cse_id),
+    )
+
     seen_urls_global: Set[str] = seen_urls if seen_urls is not None else set()
     seen_hashes_global: Set[str] = seen_hashes if seen_hashes is not None else set()
 
