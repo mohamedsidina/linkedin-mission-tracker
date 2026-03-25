@@ -1,15 +1,16 @@
 """
 scraper/bereach_scraper.py — BeReach API LinkedIn post scraper.
 
-Calls POST /search/linkedin/posts on api.berea.ch with a fixed Boolean keyword
-query, paginates while hasMore is True (up to max_posts_per_country), normalizes
-results into RawPost dicts, applies a 24h safety filter, deduplicates by URL and
-text hash, saves raw JSON to disk, and returns the final list.
+Runs two keyword queries in parallel via ThreadPoolExecutor, paginates each
+while hasMore is True (up to max_posts_per_country), normalizes results into
+RawPost dicts, applies a 24h safety filter, deduplicates by URL and text hash,
+saves raw JSON to disk, and returns the merged final list.
 """
 
 import logging
 import random
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
@@ -28,8 +29,11 @@ from scraper.linkedin_scraper import (
 _BASE_URL = "https://api.berea.ch"
 _ENDPOINT = "/search/linkedin/posts"
 
-# Fixed LinkedIn Boolean keyword query — covers freelance mission signals
-_KEYWORDS = '("freelance" OR "mission" OR "tjm" OR "besoin" OR "#hiring")'
+# Two parallel keyword queries — each targets a different mission profile
+_KEYWORD_QUERIES: List[str] = [
+    '("mission" OR "besoin") AND ("freelance" OR "tjm") AND ("PMO" OR "chef de projet")',
+    '("mission" OR "besoin") AND ("freelance" OR "tjm") AND ("itsm" OR "Run")',
+]
 
 # Results per page (BeReach max is 50)
 _PAGE_SIZE = 50
@@ -45,12 +49,12 @@ def scrape_bereach(
     seen_hashes: Optional[Set[str]] = None,
 ) -> List[RawPost]:
     """
-    Fetch LinkedIn posts from the BeReach API and return deduplicated RawPost dicts.
+    Fetch LinkedIn posts from the BeReach API using two parallel keyword queries.
 
-    Sends a single fixed Boolean keyword query with datePosted=past-24h, paginates
-    while hasMore is True or until max_posts_per_country is reached. Applies a 24h
-    safety filter, deduplicates by URL and text hash (both within-run and cross-run),
-    and saves raw results to data/raw_posts_{YYYY-MM-DD}.json.
+    Both queries run concurrently. Each paginates while hasMore is True or until
+    max_posts_per_country is reached. Results are merged and deduplicated by URL
+    and text hash (within-run and cross-run). Saves raw results to
+    data/raw_posts_{YYYY-MM-DD}.json.
 
     Args:
         config: Application configuration (provides bereach_api_token, max_posts_per_country).
@@ -64,64 +68,41 @@ def scrape_bereach(
     seen_urls_global: Set[str] = seen_urls if seen_urls is not None else set()
     seen_hashes_global: Set[str] = seen_hashes if seen_hashes is not None else set()
 
-    seen_urls_run: set = set()
-    seen_text_hashes_run: set = set()
-    all_posts: List[RawPost] = []
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
     headers = {
         "Authorization": f"Bearer {config.bereach_api_token}",
         "Content-Type": "application/json",
     }
 
-    start = 0
-    page = 0
+    logger.info(
+        "[bereach] Running %d keyword queries in parallel.", len(_KEYWORD_QUERIES)
+    )
 
-    while len(all_posts) < config.max_posts_per_country:
-        if page > 0:
-            time.sleep(random.uniform(0.5, 1.5))
-
-        payload: Dict[str, Any] = {
-            "keywords": _KEYWORDS,
-            "sortBy": "relevance",
-            "datePosted": "past-24h",
-            "count": _PAGE_SIZE,
-            "start": start,
+    # Fetch all pages for each query in parallel
+    with ThreadPoolExecutor(max_workers=len(_KEYWORD_QUERIES)) as executor:
+        futures = {
+            executor.submit(
+                _fetch_all_pages, keywords, headers, config.max_posts_per_country, logger
+            ): keywords
+            for keywords in _KEYWORD_QUERIES
         }
+        raw_batches: List[List[Dict[str, Any]]] = []
+        for future in as_completed(futures):
+            keywords = futures[future]
+            try:
+                items = future.result()
+                raw_batches.append(items)
+            except Exception as exc:
+                logger.error("[bereach] Query failed — keywords='%s': %s", keywords, exc)
+                raw_batches.append([])
 
-        try:
-            logger.debug("[bereach] POST %s%s start=%d", _BASE_URL, _ENDPOINT, start)
-            resp = requests.post(
-                f"{_BASE_URL}{_ENDPOINT}",
-                json=payload,
-                headers=headers,
-                timeout=_REQUEST_TIMEOUT,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.exceptions.HTTPError as exc:
-            logger.error(
-                "[bereach] HTTP %d error (start=%d): %s",
-                exc.response.status_code if exc.response is not None else 0,
-                start,
-                exc,
-            )
-            break
-        except Exception as exc:
-            logger.error("[bereach] Request failed (start=%d): %s", start, exc)
-            break
+    # Merge and deduplicate across both batches
+    seen_urls_run: set = set()
+    seen_text_hashes_run: set = set()
+    all_posts: List[RawPost] = []
 
-        items = data.get("items", [])
-        has_more = data.get("hasMore", False)
-        credits_used = data.get("creditsUsed", 0)
-
-        logger.info(
-            "[bereach] Fetched %d posts (start=%d, hasMore=%s, creditsUsed=%s)",
-            len(items), start, has_more, credits_used,
-        )
-
-        batch_added = 0
-        for item in items:
+    for raw_items in raw_batches:
+        for item in raw_items:
             post = _normalize_bereach_post(item)
             if post is None:
                 continue
@@ -144,9 +125,86 @@ def scrape_bereach(
             seen_urls_run.add(post["post_url"])
             seen_text_hashes_run.add(text_hash)
             all_posts.append(post)
-            batch_added += 1
 
-        logger.info("[bereach] %d new unique posts added this page.", batch_added)
+    logger.info("[bereach] Total unique posts within 24h: %d", len(all_posts))
+    _save_raw_posts(all_posts, date_str, logger)
+    return all_posts
+
+
+def _fetch_all_pages(
+    keywords: str,
+    headers: Dict[str, str],
+    max_posts: int,
+    logger: logging.Logger,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch all paginated results for a single keyword query from the BeReach API.
+
+    Paginates while hasMore is True and the collected item count is below max_posts.
+    Adds a random delay between pages to respect rate limits.
+
+    Args:
+        keywords: Boolean keyword query string.
+        headers: HTTP headers including Authorization.
+        max_posts: Maximum number of raw items to collect.
+        logger: Logger instance.
+
+    Returns:
+        List of raw item dicts from the API response.
+    """
+    collected: List[Dict[str, Any]] = []
+    start = 0
+    page = 0
+
+    while len(collected) < max_posts:
+        if page > 0:
+            time.sleep(random.uniform(0.5, 1.5))
+
+        payload: Dict[str, Any] = {
+            "keywords": keywords,
+            "sortBy": "relevance",
+            "datePosted": "past-24h",
+            "count": _PAGE_SIZE,
+            "start": start,
+        }
+
+        try:
+            logger.debug(
+                "[bereach] POST %s%s keywords='%.60s...' start=%d",
+                _BASE_URL, _ENDPOINT, keywords, start,
+            )
+            resp = requests.post(
+                f"{_BASE_URL}{_ENDPOINT}",
+                json=payload,
+                headers=headers,
+                timeout=_REQUEST_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except requests.exceptions.HTTPError as exc:
+            logger.error(
+                "[bereach] HTTP %d error (keywords='%.60s...', start=%d): %s",
+                exc.response.status_code if exc.response is not None else 0,
+                keywords, start, exc,
+            )
+            break
+        except Exception as exc:
+            logger.error(
+                "[bereach] Request failed (keywords='%.60s...', start=%d): %s",
+                keywords, start, exc,
+            )
+            break
+
+        items = data.get("items", [])
+        has_more = data.get("hasMore", False)
+        credits_used = data.get("creditsUsed", 0)
+
+        logger.info(
+            "[bereach] keywords='%.60s...' start=%d → %d items (hasMore=%s, credits=%s)",
+            keywords, start, len(items), has_more, credits_used,
+        )
+
+        collected.extend(items)
 
         if not has_more or not items:
             break
@@ -154,9 +212,7 @@ def scrape_bereach(
         start += _PAGE_SIZE
         page += 1
 
-    logger.info("[bereach] Total unique posts within 24h: %d", len(all_posts))
-    _save_raw_posts(all_posts, date_str, logger)
-    return all_posts
+    return collected
 
 
 def _normalize_bereach_post(item: Dict[str, Any]) -> Optional[RawPost]:
@@ -205,5 +261,5 @@ def _normalize_bereach_post(item: Dict[str, Any]) -> Optional[RawPost]:
         comments_count=int(item.get("commentsCount") or 0),
         contact_info=_extract_contact_info(post_text),
         country="",
-        keyword=_KEYWORDS,
+        keyword=item.get("_keyword", ""),
     )
