@@ -99,6 +99,9 @@ _LOCATION_MAP = {
         "auxerre", "troyes", "charleville-mézières", "laon", "beauvais",
         "cesson-sévigné", "lannion", "lorient", "quimper", "vannes", "saint-brieuc",
         "château-thierry", "compiègne", "senlis", "chantilly", "pontoise",
+        # Normandie
+        "évreux", "evreux", "cherbourg", "alençon", "alencon",
+        "lisieux", "bayeux", "dieppe", "fécamp", "fecamp", "granville", "saint-lô",
     ],
     "Morocco": [
         "maroc", "morocco", "casablanca", "rabat", "marrakech", "fès", "fes",
