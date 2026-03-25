@@ -21,6 +21,7 @@ class AppConfig:
     anthropic_api_key: str
     google_service_account_json: str  # raw JSON string, parsed in-memory — never written to disk
     spreadsheet_id: str
+    bereach_api_token: str
 
     # From config/settings.json (or overridden by Paramètres sheet tab)
     linkedin_profiles: List[Dict[str, str]]  # [{"name": "...", "url": "..."}, ...]  max 3
@@ -30,9 +31,6 @@ class AppConfig:
     max_posts_per_country: int
     sheet_tab_format: str
 
-    # Optional — Google Custom Search API (opt-in fallback scraper)
-    google_cse_api_key: Optional[str] = None
-    google_cse_id: Optional[str] = None
 
 
 def load_config() -> AppConfig:
@@ -52,6 +50,7 @@ def load_config() -> AppConfig:
     anthropic_api_key = _require_env("ANTHROPIC_API_KEY")
     google_service_account_json = _require_env("GOOGLE_SERVICE_ACCOUNT_JSON")
     spreadsheet_id = _require_env("SPREADSHEET_ID")
+    bereach_api_token = _require_env("BEREACH_API_TOKEN")
 
     # Validate that the service account JSON is parseable before any API calls are made
     try:
@@ -102,8 +101,7 @@ def load_config() -> AppConfig:
         min_match_score=min_match_score,
         max_posts_per_country=int(settings.get("MAX_POSTS_PER_COUNTRY", 50)),
         sheet_tab_format=settings.get("SHEET_TAB_FORMAT", "Missions_{YYYY-MM}"),
-        google_cse_api_key=os.getenv("GOOGLE_CSE_API_KEY") or None,
-        google_cse_id=os.getenv("GOOGLE_CSE_ID") or None,
+        bereach_api_token=bereach_api_token,
     )
 
 
