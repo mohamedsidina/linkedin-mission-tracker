@@ -79,6 +79,7 @@ class EnrichedPost(dict):
         language: str              — "FR" or "EN"
         profil_name: str           — name of the LinkedIn profile with best match
         scored_at: str             — ISO 8601 UTC
+        is_target_location: bool   — True if mission is in France/Maroc/Remote/unknown
     """
 
 
@@ -669,7 +670,8 @@ Respond with ONLY a valid JSON object — no preamble, no markdown fences, no ex
   "contact_info": "string or null — email or contact method from the post, null if none",
 {best_profil_field}  "match_score": "float 0-100 — match score for best_profil (must be 0 if is_genuine_mission=false)",
   "match_reasons": ["top 3 concise reasons explaining the score, referencing specific skills"],
-  "language": "FR or EN — language of the post"
+  "language": "FR or EN — language of the post",
+  "is_target_location": "boolean — see GEO RULE below"
 }}
 
 ## Critical rule — is_genuine_mission:
@@ -688,7 +690,42 @@ Set is_genuine_mission=true only when:
 - 50-79: Partial match — some relevant skills or domain overlap
 - 0-49: Weak match — few or no skill overlaps
 
-## Example output (genuine mission):
+## GEO RULE — is_target_location (evaluated AFTER scoring, independent of match_score):
+
+Determine if the mission is physically located in France métropolitaine or Maroc.
+
+STEP 1 — Look for an explicit location in the post text:
+  - City name, region, department (Paris, Lyon, Île-de-France, Casablanca, Rabat...)
+  - Geographic hashtags (#paris #idf #maroc #casablanca #freelancefrance)
+  - Direct country mention
+
+STEP 2 — If no explicit location, analyze implicit signals:
+  - TJM/rate expressed in € (€) → strong indicator of France
+  - Post written entirely in French with ESN/freelance context → likely France
+  - Known French ESN or company mentioned → likely France
+  - Foreign currency (£, $, CHF) or explicit foreign country → not target
+
+DECISION RULES — set is_target_location to:
+  → true  if mission is in France métropolitaine (mainland France only)
+  → true  if mission is in Maroc (Morocco)
+  → true  if mission is "Remote" / "Télétravail" / "Full Remote" (location-independent)
+  → true  if location is completely unknown after analysis (safety net — do not lose opportunities)
+  → false if mission is explicitly in another country: Belgique, Luxembourg, Suisse, Espagne,
+           UK, USA, Canada, Allemagne, Pays-Bas, Italie, or any country other than France/Maroc
+  → false if mission is in DOM-TOM: La Réunion, Guadeloupe, Martinique, Guyane,
+           Mayotte, Nouvelle-Calédonie, Polynésie française
+
+SPECIAL RULE — if is_genuine_mission=false:
+  Always return is_target_location=true. The post is already excluded by match_score=0
+  and geo analysis is irrelevant.
+
+ANTI-HALLUCINATION RULES:
+  - Never infer a city from the author's name or company name alone.
+  - "Near the border" or "accessible from Paris" does NOT make Brussels or Luxembourg a target.
+  - A French-sounding company name does not guarantee the mission is in France.
+  - When genuinely uncertain between France and another country → return true (safety net).
+
+## Example output (genuine mission, France):
 {{
   "is_genuine_mission": true,
   "mission_title": "Chef de projet Digital",
@@ -705,7 +742,29 @@ Set is_genuine_mission=true only when:
     "Digital Transformation expertise matches mission domain",
     "Agile/Scrum mentioned in both profile and post"
   ],
-  "language": "FR"
+  "language": "FR",
+  "is_target_location": true
+}}
+
+## Example output (genuine mission, outside target — Luxembourg):
+{{
+  "is_genuine_mission": true,
+  "mission_title": "PMO Senior",
+  "required_skills": ["PMO", "gestion de projet", "reporting"],
+  "duration": "6 mois",
+  "daily_rate_tjm": null,
+  "location": "Luxembourg",
+  "remote_ok": false,
+  "contact_info": null,
+  "best_profil": "{profiles[0]['name']}",
+  "match_score": 65.0,
+  "match_reasons": [
+    "PMO expertise matches",
+    "Project management background relevant",
+    "Reporting skills aligned"
+  ],
+  "language": "FR",
+  "is_target_location": false
 }}
 
 ## Example output (NOT a genuine mission — freelancer advertising themselves):
@@ -721,7 +780,8 @@ Set is_genuine_mission=true only when:
   "best_profil": "{profiles[0]['name']}",
   "match_score": 0,
   "match_reasons": ["Post is a freelancer advertising their own availability, not a mission offer"],
-  "language": "FR"
+  "language": "FR",
+  "is_target_location": true
 }}"""
 
 
@@ -768,6 +828,13 @@ def _parse_claude_response(response_text: str, logger: logging.Logger) -> Dict[s
         raw_val = str(data.get("remote_ok", "false")).lower()
         data["remote_ok"] = raw_val in ("true", "1", "yes", "oui")
 
+    # Parse is_target_location — default True (keep post if uncertain)
+    raw_loc = data.get("is_target_location")
+    if isinstance(raw_loc, bool):
+        data["is_target_location"] = raw_loc
+    else:
+        data["is_target_location"] = True  # safe default: never drop on ambiguity
+
     return data
 
 
@@ -796,4 +863,5 @@ def _make_error_enrichment(profiles: List[Dict[str, str]]) -> Dict[str, Any]:
         "match_score": 0.0,
         "match_reasons": [],
         "language": "FR",
+        "is_target_location": True,  # safe default — error posts excluded by match_score=0
     }
