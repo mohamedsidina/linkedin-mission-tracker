@@ -64,14 +64,6 @@ _USER_AGENT = (
 # Regex to strip markdown code fences from Claude responses
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```")
 
-# Keywords that signal a genuine freelance mission post
-# Posts missing ALL of these are pre-filtered before Claude scoring
-_MISSION_SIGNALS = [
-    "freelance", "mission", "consultant", "prestation", "indépendant",
-    "tjm", "cdi", "cdd", "recherche", "besoin", "profil", "urgent",
-    "contract", "interim", "régie", "forfait",
-]
-
 
 class EnrichedPost(dict):
     """
@@ -179,23 +171,7 @@ def score_posts(
         logger.info("[matcher] No raw posts to score.")
         return []
 
-    # Pre-filter: skip posts with no mission-related signal
-    candidates = []
-    for p in raw_posts:
-        if _is_potential_mission(p.get("post_text", "")):
-            candidates.append(p)
-        else:
-            logger.debug(
-                "[matcher] Pre-filter dropped (no mission signal): %s", p.get("post_url", "")
-            )
-    logger.info(
-        "[matcher] Pre-filter: %d/%d posts pass mission signal check (%d dropped).",
-        len(candidates), len(raw_posts), len(raw_posts) - len(candidates),
-    )
-
-    if not candidates:
-        logger.warning("[matcher] All posts filtered out. Check search keywords.")
-        return []
+    candidates = raw_posts
 
     # Build profile list from pre-built vectors or fetch on the fly
     if profile_vectors:
@@ -303,22 +279,6 @@ def score_posts(
     )
     return enriched
 
-
-def _is_potential_mission(text: str) -> bool:
-    """
-    Quick keyword scan to discard posts with no mission-related signal.
-
-    Avoids sending clearly irrelevant posts (news, branding, congratulations)
-    to Claude. Conservative — keeps posts if ANY signal word is present.
-
-    Args:
-        text: Post text to scan.
-
-    Returns:
-        True if at least one mission signal keyword is found.
-    """
-    tl = text.lower()
-    return any(signal in tl for signal in _MISSION_SIGNALS)
 
 
 def _fetch_profile_via_apify(
