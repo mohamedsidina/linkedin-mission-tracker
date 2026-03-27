@@ -88,7 +88,7 @@ def scrape_all_countries(
     seen_hashes_global: Set[str] = seen_hashes if seen_hashes is not None else set()
 
     # In-memory per-run sets (reset each execution)
-    seen_urls: set = set()
+    seen_urls_run: set = set()
     seen_text_hashes: set = set()
     all_posts: List[RawPost] = []
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -129,7 +129,7 @@ def scrape_all_countries(
                 if not _is_within_24h(post["post_date"], logger):
                     continue
                 # Deduplicate by URL (in-memory, this run)
-                if post["post_url"] in seen_urls:
+                if post["post_url"] in seen_urls_run:
                     logger.debug("[scraper] duplicate URL skipped: %s", post["post_url"])
                     continue
                 # Deduplicate by text hash (in-memory, catches reposts with different URLs)
@@ -145,7 +145,7 @@ def scrape_all_countries(
                     logger.debug("[scraper] cross-run repost skipped (text hash): %s", post["post_url"])
                     continue
 
-                seen_urls.add(post["post_url"])
+                seen_urls_run.add(post["post_url"])
                 seen_text_hashes.add(text_hash)
                 all_posts.append(post)
                 batch_added += 1

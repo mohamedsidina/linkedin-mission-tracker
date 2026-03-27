@@ -68,7 +68,7 @@ scores them against my profile, and writes structured data to Google Sheets.
 
 \## Environment Variables Required
 
-APIFY\_API\_TOKEN, ANTHROPIC\_API\_KEY,
+APIFY\_API\_TOKEN, ANTHROPIC\_API\_KEY, BEREACH\_API\_TOKEN,
 
 GOOGLE\_SERVICE\_ACCOUNT\_JSON, SPREADSHEET\_ID
 

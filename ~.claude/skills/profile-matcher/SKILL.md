@@ -2,9 +2,9 @@
 
 name: profile-matcher
 
-description: Fetches my LinkedIn profile, extracts skills/experience, then scores
-
-&nbsp; each scraped post for relevance using Claude API. Returns enriched post dicts with match\_score.
+description: Fetches LinkedIn profile(s) via Apify (with sheet caching), then scores each scraped
+  post for relevance using Claude Haiku. Returns enriched post dicts with match_score, extracted
+  mission details, and geo-filter flag. Handles multi-profile scoring.
 
 ---
 
@@ -12,55 +12,61 @@ description: Fetches my LinkedIn profile, extracts skills/experience, then score
 
 \## Process Steps
 
+1\. **Profile fetching** (`fetch_profile_vectors()`):
+
+&nbsp;  - Check `Profils_Cache` sheet tab for a cached profile vector (refreshed once per day).
+
+&nbsp;  - On cache miss, fetch the LinkedIn profile HTML via the Apify LinkedIn Profile Scraper actor.
+
+&nbsp;  - Parse HTML with BeautifulSoup to extract skills, titles, headline, about, certifications.
+
+&nbsp;  - On Apify failure, fall back to a generic `_FALLBACK_PROFILE` string (never crashes).
+
+&nbsp;  - Save updated vectors to `Profils_Cache` for next run.
+
+2\. **Feedback loading** (`run.py`): load user feedback from the sheet (column M), aggregate by domain
+   cluster into a calibration table (injected into Claude prompt as a compact reference).
+
+3\. **Scoring** (`score_posts()`): for each raw post, call `_score_post_with_claude()` concurrently
+   (up to `_MAX_CONCURRENT_SCORING=5` threads), with a random 0.3–1.0s stagger between workers.
+
+4\. **Claude model**: `claude-haiku-4-5-20251001` — fast and cost-efficient for batch scoring.
+
+5\. **Claude prompt** asks Claude to:
+
+&nbsp;  a. Determine `is_genuine_mission` (TRUE only if a company/recruiter/ESN is actively seeking a freelancer).
+
+&nbsp;  b. Extract: `mission_title`, `required_skills`, `duration`, `daily_rate_tjm`, `location`, `remote_ok`, `contact_info`.
+
+&nbsp;  c. Score profile match (0–100): 80–100 strong, 50–79 partial, 0–49 weak.
+
+&nbsp;  d. Determine `is_target_location` based on `config.target_countries`.
+
+&nbsp;  e. Reference the domain calibration table to align score levels with user's past feedback.
+
+6\. **Non-genuine posts**: `match_score` forced to 0, post not written to sheet.
+
+7\. **Location-filtered posts** (`is_target_location=False`): scored normally but indexed in
+   `Dedup_Index` so they are never re-scored on future runs.
+
+8\. **Rate limit handling**: up to 3 retries with exponential backoff (10s / 20s / 40s) on
+   `anthropic.RateLimitError`. Other errors return safe defaults (`match_score=0`).
+
+9\. **Filter and sort**: keep posts with `match_score >= config.min_match_score`, sort descending.
 
 
-1\. Fetch the profile at MY\_LINKEDIN\_URL using the same Playwright session (already authenticated).
 
-2\. Extract from my profile: skills list, job titles, years of experience, industries, certifications.
+\## EnrichedPost Schema (output)
 
-3\. Build a "profile\_vector" string: concatenate all skills and titles.
-
-4\. For each raw post:
-
-&nbsp;  a. Send a Claude API call (claude-3-5-haiku for speed/cost) with this prompt:
-
-&nbsp;     ```
-
-&nbsp;     Given this freelance mission post: {post\_text}
-
-&nbsp;     And this consultant profile: {profile\_vector}
-
-&nbsp;     
-
-&nbsp;     Extract and return JSON with:
-
-&nbsp;     - mission\_title: string
-
-&nbsp;     - required\_skills: list\[str]
-
-&nbsp;     - duration: string (e.g. "3 months", "TJM 600€")
-
-&nbsp;     - daily\_rate\_tjm: string or null
-
-&nbsp;     - location: string
-
-&nbsp;     - remote\_ok: bool
-
-&nbsp;     - contact\_info: string or null
-
-&nbsp;     - match\_score: float 0-100 (how well the profile matches)
-
-&nbsp;     - match\_reasons: list\[str] (top 3 reasons for the score)
-
-&nbsp;     - language: "FR" or "EN"
-
-&nbsp;     ```
-
-&nbsp;  b. Parse the JSON response. On parse failure, set match\_score=0 and log error.
-
-5\. Filter: keep only posts with match\_score >= 40.
-
-6\. Return: List\[Dict] enriched posts sorted by match\_score descending.
+`is_genuine_mission`, `mission_title`, `required_skills`, `duration`, `daily_rate_tjm`,
+`location`, `remote_ok`, `contact_info`, `best_profil` (profile name with highest score),
+`match_score`, `match_reasons`, `language`, `is_target_location`.
 
 
+
+\## Environment Variables Required
+
+\- `ANTHROPIC_API_KEY`: Claude API key
+
+\- `APIFY_API_TOKEN`: used for profile fetching via Apify
 

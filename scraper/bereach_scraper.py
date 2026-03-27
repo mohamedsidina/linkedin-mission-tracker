@@ -29,13 +29,11 @@ from scraper.linkedin_scraper import (
 _BASE_URL = "https://api.berea.ch"
 _ENDPOINT = "/search/linkedin/posts"
 
-# Two parallel keyword queries — each targets a different mission profile
-_KEYWORD_QUERIES: List[str] = [
-    '("mission" OR "besoin") AND ("freelance" OR "tjm") AND ("PMO" OR "chef de projet")',
-    '("mission" OR "besoin") AND ("freelance" OR "tjm") AND ("itsm" OR "Run")',
-    '("mission" OR "besoin") AND ("freelance" OR "tjm") AND ("business analyst" OR "Product Owner")',
-    '("mission" OR "besoin") AND ("freelance" OR "tjm") AND ("ServiceNow" OR "Incident")',
-]
+# Country aliases for BeReach boolean queries (LinkedIn posts may use local names)
+_COUNTRY_ALIASES: Dict[str, str] = {
+    "France": "France",
+    "Morocco": "Maroc OR Morocco",
+}
 
 # Results per page (BeReach max is 50)
 _PAGE_SIZE = 50
@@ -70,6 +68,13 @@ def scrape_bereach(
     seen_urls_global: Set[str] = seen_urls if seen_urls is not None else set()
     seen_hashes_global: Set[str] = seen_hashes if seen_hashes is not None else set()
 
+    # Build boolean queries from config: one per (keyword × country) pair
+    keyword_queries: List[str] = []
+    for kw in config.search_keywords:
+        for country in config.target_countries:
+            country_term = _COUNTRY_ALIASES.get(country, country)
+            keyword_queries.append(f'"{kw}" AND ({country_term})')
+
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     headers = {
         "Authorization": f"Bearer {config.bereach_api_token}",
@@ -77,17 +82,17 @@ def scrape_bereach(
     }
 
     logger.info(
-        "[bereach] Running %d keyword queries in parallel.", len(_KEYWORD_QUERIES)
+        "[bereach] Running %d keyword queries in parallel.", len(keyword_queries)
     )
 
     # Fetch all pages for each query in parallel, staggered by 5s to avoid 429
-    with ThreadPoolExecutor(max_workers=len(_KEYWORD_QUERIES)) as executor:
+    with ThreadPoolExecutor(max_workers=len(keyword_queries)) as executor:
         futures = {
             executor.submit(
                 _fetch_all_pages, keywords, headers, config.max_posts_per_country, logger,
                 initial_delay=i * 5.0,
             ): keywords
-            for i, keywords in enumerate(_KEYWORD_QUERIES)
+            for i, keywords in enumerate(keyword_queries)
         }
         raw_batches: List[List[Dict[str, Any]]] = []
         for future in as_completed(futures):

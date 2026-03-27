@@ -2,37 +2,79 @@
 
 name: sheets-writer
 
-description: Writes enriched freelance mission posts to Google Sheets. Handles
-
-&nbsp; deduplication and daily appending without overwriting historical data.
+description: Reads config from Google Sheets, loads cross-run dedup index, writes enriched
+  freelance mission posts to a monthly tab, manages profile vector cache, and syncs a
+  Paramètres config tab. Handles deduplication and daily appending without overwriting history.
 
 ---
 
 
 
+\## Sheet Tabs
+
+| Tab | Purpose |
+|---|---|
+| `Missions_{YYYY-MM}` | Monthly mission data — one row per unique post |
+| `Dedup_Index` | Persistent cross-run dedup index (post_url + text_hash) |
+| `Profils_Cache` | Caches LinkedIn profile vectors to avoid re-fetching each run |
+| `Paramètres` | Editable config (keywords, countries, score threshold, etc.) |
+
+
+
 \## Process Steps
 
+1\. **Config sync** (`sync_config_tab()`): read `Paramètres` tab and override `AppConfig` fields
+   (keywords, target countries, min score, etc.) — allows non-code config changes from the sheet.
+
+2\. **Profile cache** (`load_profile_vectors()`): read `Profils_Cache` tab. Returns dict of
+   `{name: vector_string}`. Used by `profile_matcher.fetch_profile_vectors()` to skip Apify calls.
+
+3\. **Dedup index** (`load_seen_posts_all_tabs()`): read `Dedup_Index` tab (columns: post_url,
+   text_hash). Returns two sets passed to the scraper for cross-run deduplication.
+
+4\. **Write missions** (`write_missions()`):
+
+&nbsp;  a. Create or verify `Missions_{YYYY-MM}` tab exists; write header row if new.
+
+&nbsp;  b. For each enriched post, check URL and text hash against existing rows in the tab.
+
+&nbsp;  c. Append only new, non-duplicate posts.
+
+&nbsp;  d. Apply conditional formatting to column F (match_score): ≥80 green, 50–79 yellow, <50 red.
+
+&nbsp;  e. Add new URLs and hashes to `Dedup_Index` tab.
+
+5\. **Index rejected posts** (`index_rejected_posts()`): posts filtered by geo (`is_target_location=False`)
+   are added to `Dedup_Index` only — so they are never re-scored on future runs.
+
+6\. **Error row** (`_write_error_row()`): if the pipeline crashes, write a 13-column ERROR row to
+   the sheet so failures are visible without reading logs.
 
 
-1\. Authenticate with Google Sheets API using service account from GOOGLE\_SERVICE\_ACCOUNT\_JSON env var.
 
-2\. Open spreadsheet by SPREADSHEET\_ID.
+\## Column Schema (`_HEADERS`, 13 columns A–M)
 
-3\. Check or create sheet tab named "Missions\_{YYYY-MM}" for current month.
+| Col | Field | Notes |
+|---|---|---|
+| A | date | YYYY-MM-DD |
+| B | heure | HH:MM UTC |
+| C | author_name | |
+| D | mission_title | |
+| E | required_skills | comma-separated |
+| F | match_score | conditional formatting |
+| G | tjm | daily rate if mentioned |
+| H | post_url | **dedup key** (not column A) |
+| I | pays | country |
+| J | ville | city |
+| K | profil | LinkedIn profile name with best match |
+| L | match_reasons | top 3 Claude reasons |
+| M | feedback | filled manually by user |
 
-4\. Read existing post\_urls from column A to build a dedup set.
-
-5\. For each enriched post not already in the sheet, append a new row with these columns:
-
-&nbsp;  | date\_found | post\_url | author\_name | author\_title | author\_profile\_url |
-
-&nbsp;  | mission\_title | required\_skills | duration | daily\_rate\_tjm | location |
-
-&nbsp;  | remote\_ok | contact\_info | match\_score | match\_reasons | post\_text | country |
-
-6\. Apply conditional formatting: match\_score >= 80 → green, 50–79 → yellow, < 50 → red.
-
-7\. Log: "X new missions added, Y duplicates skipped."
 
 
+\## Environment Variables Required
+
+\- `GOOGLE_SERVICE_ACCOUNT_JSON`: service account JSON (parsed in-memory, never written to disk)
+
+\- `SPREADSHEET_ID`: target Google Spreadsheet ID
 

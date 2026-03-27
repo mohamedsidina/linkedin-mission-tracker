@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional, Set
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 
 from config.config import AppConfig
 from matcher.profile_matcher import EnrichedPost
@@ -1011,7 +1010,7 @@ def _write_error_row(
     """
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     hour_str = datetime.now(timezone.utc).strftime("%H:%M")
-    error_row = [date_str, hour_str, "", "PIPELINE ERROR", "", -1, "", "ERROR", "N/A", "", ""]
+    error_row = [date_str, hour_str, "", "PIPELINE ERROR", "", -1, "", "ERROR", "N/A", "", "", "", ""]
     try:
         range_name = f"'{tab_name}'!A1"
         service.spreadsheets().values().append(

@@ -344,6 +344,7 @@ def score_posts(
 
             # Force score=0 for posts that are not genuine mission offers
             if not claude_data.get("is_genuine_mission", True):
+                score = 0.0
                 claude_data["match_score"] = 0.0
                 logger.info(
                     "[matcher] Scored %d/%d — score=0.0 (not a genuine mission) url=%s",
@@ -355,7 +356,6 @@ def score_posts(
                     "[matcher] Scored %d/%d — score=%.1f url=%s",
                     done_count, total, score, post.get("post_url", ""),
                 )
-            score = float(claude_data.get("match_score", 0))
 
             # Warn when Claude failed to extract any mission structure
             title = claude_data.get("mission_title", "")
@@ -644,8 +644,8 @@ def _build_profile_vector(html: str) -> str:
                 if text:
                     parts.append(text)
 
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger(__name__).debug("[matcher] Profile HTML parse failed: %s", exc)
 
     if not parts:
         return _FALLBACK_PROFILE
