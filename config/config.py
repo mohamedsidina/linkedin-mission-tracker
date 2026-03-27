@@ -6,6 +6,7 @@ Every other module receives an AppConfig instance; no module calls os.getenv() d
 """
 
 import json
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -89,6 +90,12 @@ def load_config() -> AppConfig:
         raise EnvironmentError("TARGET_COUNTRIES is empty or missing in settings.json.")
     if not settings.get("SEARCH_KEYWORDS"):
         raise EnvironmentError("SEARCH_KEYWORDS is empty or missing in settings.json.")
+
+    if len(settings["SEARCH_KEYWORDS"]) > 6:
+        logging.getLogger(__name__).warning(
+            "SEARCH_KEYWORDS has %d entries; only the first 6 will be shown in the Paramètres sheet.",
+            len(settings["SEARCH_KEYWORDS"]),
+        )
 
     return AppConfig(
         apify_api_token=apify_api_token,

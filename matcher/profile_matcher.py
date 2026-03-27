@@ -807,14 +807,16 @@ Respond with ONLY a valid JSON object — no preamble, no markdown fences, no ex
   "remote_ok": "boolean — true if remote work is explicitly mentioned or implied",
   "contact_info": "string or null — email or contact method from the post, null if none",
 {best_profil_field}  "match_score": "float 0-100 — match score for best_profil (must be 0 if is_genuine_mission=false)",
-  "match_reasons": [
-    "3 reasons in format: 'TERM_IN_POST ↔ SKILL_IN_PROFILE (match type)'",
-    "match types: direct match | vocabulary equivalence | adjacent domain | no match",
-    "example: 'Pilotage PMO requis ↔ expérience PMO confirmée (direct match)'"
-  ],
+  "match_reasons": ["array of 3 strings — format defined in MATCH_REASONS FORMAT section below"],
   "language": "FR or EN — language of the post",
   "is_target_location": "boolean — see GEO RULE below"
 }}
+
+## match_reasons format (required for all 3 entries):
+Each string must follow: "TERM_IN_POST ↔ SKILL_IN_PROFILE (match type)"
+Match types: direct match | vocabulary equivalence | adjacent domain | no match
+Example: "Pilotage PMO requis ↔ expérience PMO confirmée (direct match)"
+If is_genuine_mission=false: use a single entry explaining why (e.g. "Post is a freelancer advertising their own availability, not a mission offer").
 
 ## Critical rule — is_genuine_mission:
 Set is_genuine_mission=false (and match_score=0) when:
@@ -912,9 +914,9 @@ ANTI-HALLUCINATION RULES:
   "best_profil": "{profiles[0]['name']}",
   "match_score": 82.5,
   "match_reasons": [
-    "Profile lists Project Management — key skill for this mission",
-    "Digital Transformation expertise matches mission domain",
-    "Agile/Scrum mentioned in both profile and post"
+    "Chef de projet Digital ↔ expérience Chef de projet SI (direct match)",
+    "Transformation digitale ↔ digital transformation background (direct match)",
+    "Agile/Scrum ↔ compétences Agile/Scrum dans le profil (direct match)"
   ],
   "language": "FR",
   "is_target_location": true
@@ -933,9 +935,9 @@ ANTI-HALLUCINATION RULES:
   "best_profil": "{profiles[0]['name']}",
   "match_score": 65.0,
   "match_reasons": [
-    "PMO expertise matches",
-    "Project management background relevant",
-    "Reporting skills aligned"
+    "PMO Senior ↔ expérience PMO confirmée (direct match)",
+    "Gestion de projet ↔ compétences chef de projet dans le profil (direct match)",
+    "Reporting ↔ compétences reporting COPIL dans le profil (direct match)"
   ],
   "language": "FR",
   "is_target_location": false

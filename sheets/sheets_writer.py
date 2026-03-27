@@ -444,8 +444,9 @@ def _create_config_tab(
     for country in config.target_countries:
         rows.append(["pays", country, ""])
 
-    rows.append(["# Mots-clés de recherche (un mot-clé par ligne)", "", ""])
-    for kw in config.search_keywords:
+    rows.append(["# Mots-clés de recherche (max 6 requêtes)", "", ""])
+    keywords_padded = list(config.search_keywords) + [""] * 6
+    for kw in keywords_padded[:6]:
         rows.append(["keyword", kw, ""])
 
     rows += [
