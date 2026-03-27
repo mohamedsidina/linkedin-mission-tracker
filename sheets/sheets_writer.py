@@ -587,7 +587,11 @@ def load_feedback_examples(
                 "mission_title": str(row[3]).strip() if len(row) > 3 else "",
                 "required_skills": str(row[4]).strip() if len(row) > 4 else "",
                 "feedback": feedback,
+                "post_date": str(row[0]).strip() if row else "",
             })
+
+    # Most recent feedback first — ensures calibration reflects latest preferences
+    examples.sort(key=lambda x: x.get("post_date", ""), reverse=True)
 
     logger.info("[sheets] Loaded %d feedback example(s) from %d tab(s).", len(examples), len(mission_tabs))
     return examples

@@ -63,6 +63,116 @@ _USER_AGENT = (
 # Regex to strip markdown code fences from Claude responses
 _CODE_FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)\s*```")
 
+# ---------------------------------------------------------------------------
+# Feedback calibration — domain clusters + polarity signals
+# Used to aggregate all user feedback into a fixed-size calibration table
+# injected into the Claude prompt (~150 tokens, O(1) regardless of volume).
+# ---------------------------------------------------------------------------
+
+_DOMAIN_CLUSTERS: Dict[str, list] = {
+    "PMO / Pilotage":    ["pmo", "pilotage", "chef de projet", "coordination projet", "programme", "portefeuille"],
+    "Service Delivery":  ["service delivery", "sdm", "delivery manager", "service manager", "responsable service"],
+    "Incident Manager":  ["incident", "major incident", "war room", "crise it", "gestionnaire d'incidents"],
+    "ITSM / Run / MCO":  ["itsm", "run ", "mco", "tma", "exploitation it", "maintien en condition"],
+    "Business Analyst":  ["business analyst", " ba ", "analyste fonctionnel", "amoa", "moa", "référent fonctionnel"],
+    "Product Owner":     ["product owner", " po ", "product manager", "backlog", "user stories"],
+    "Dev / Technique":   ["dev ", "développeur", "developer", "php", "java", "python", "angular", "react", "fullstack"],
+    "Data / IA":         ["data engineer", "data scientist", "machine learning", " ia ", "bi ", "analytics", "etl"],
+    "Infra / Réseau":    ["infra", "réseau", "network", "sysadmin", "devops", "cloud", "aws", "azure"],
+}
+
+_POSITIVE_SIGNALS = [
+    "parfait", "excellent", "très bon", "exactement", "idéal", "top",
+    "bon match", "intéressant", "bien", "super", "pertinent",
+]
+_NEGATIVE_SIGNALS = [
+    "hors scope", "trop technique", "pas pour moi", "pas moi", "hors cible",
+    "non pertinent", "pas adapté", "pas concerné",
+]
+_CAUTIOUS_SIGNALS = [
+    "borderline", "peut-être", "à voir", "pas sûr", "mitigé", "moyen", "limite", "nuancé",
+]
+
+
+def _classify_polarity(feedback_text: str) -> str:
+    """
+    Classify free-text feedback as 'positive', 'negative', or 'cautious'.
+
+    Checks cautious signals first (most specific), then negative, then positive.
+    Defaults to 'positive' as a safety net to avoid losing opportunities.
+
+    Args:
+        feedback_text: Raw feedback string from the user.
+
+    Returns:
+        One of 'positive', 'negative', 'cautious'.
+    """
+    text = feedback_text.lower()
+    if any(s in text for s in _CAUTIOUS_SIGNALS):
+        return "cautious"
+    if any(s in text for s in _NEGATIVE_SIGNALS):
+        return "negative"
+    if any(s in text for s in _POSITIVE_SIGNALS):
+        return "positive"
+    return "positive"  # safety net
+
+
+def _build_calibration_table(feedback_examples: List[Dict[str, str]]) -> str:
+    """
+    Aggregate all feedback examples into a fixed-size domain calibration table.
+
+    Classifies each feedback entry by domain (via keyword matching on
+    mission_title + required_skills) and polarity (via _classify_polarity).
+    Produces a compact table (~150 tokens) that tells Claude which domains
+    to score high, low, or with caution — regardless of input volume.
+
+    Args:
+        feedback_examples: List of feedback dicts (keys: mission_title,
+            required_skills, feedback, post_date). Already sorted recent-first.
+
+    Returns:
+        Formatted calibration table string, ready for prompt injection.
+    """
+    stats: Dict[str, Dict[str, int]] = {
+        d: {"pos": 0, "neg": 0, "cau": 0} for d in _DOMAIN_CLUSTERS
+    }
+
+    for ex in feedback_examples:
+        text = (ex.get("mission_title", "") + " " + ex.get("required_skills", "")).lower()
+        polarity = _classify_polarity(ex.get("feedback", ""))
+        key = polarity[:3]  # "pos", "neg", "cau"
+        for domain, keywords in _DOMAIN_CLUSTERS.items():
+            if any(kw in text for kw in keywords):
+                stats[domain][key] += 1
+                break  # assign to first matching domain only
+
+    lines = ["## Score calibration table (aggregated from all past user feedback):"]
+    lines.append(f"{'Domain':<25} | {'✅ Approved':>11} | {'❌ Rejected':>11} | Target score")
+    lines.append("-" * 68)
+    has_data = False
+    for domain, s in stats.items():
+        total = s["pos"] + s["neg"] + s["cau"]
+        if total == 0:
+            continue
+        has_data = True
+        if s["pos"] > s["neg"] * 2:
+            target = "70+"
+        elif s["neg"] > s["pos"] * 2:
+            target = "<25"
+        else:
+            target = "40-55"
+        lines.append(f"{domain:<25} | {s['pos']:>11} | {s['neg']:>11} | {target}")
+
+    if not has_data:
+        return ""  # no feedback yet — skip section entirely
+
+    lines.append("")
+    lines.append(
+        "Apply these calibrations: domains with many approvals → score higher; "
+        "domains with many rejections → score lower. Use regardless of vocabulary."
+    )
+    return "\n".join(lines) + "\n\n"
+
 # Consultant domain expertise — injected into every scoring prompt
 # to give Claude explicit context before reading the profile vector.
 _CONSULTANT_PERSONA = """## Consultant Context:
@@ -652,18 +762,11 @@ def _build_claude_prompt(
             f'  "best_profil": "one of {names_str} — the profile with the highest individual match score",\n'
         )
 
-    # Build feedback section from past user corrections
+    # Build feedback section — aggregated calibration table (~150 tokens fixed,
+    # regardless of how many feedback examples exist).
     feedback_section = ""
     if feedback_examples:
-        lines = [
-            "## Retours utilisateur sur vos suggestions précédentes (apprenez de ces exemples) :",
-        ]
-        for ex in feedback_examples[:15]:  # cap to avoid prompt bloat
-            title = ex.get("mission_title", "?")
-            skills = ex.get("required_skills", "")
-            fb = ex.get("feedback", "")
-            lines.append(f'- "{title}" ({skills}) → Retour utilisateur : "{fb}"')
-        feedback_section = "\n".join(lines) + "\n\n"
+        feedback_section = _build_calibration_table(feedback_examples)
 
     return f"""You are analyzing a LinkedIn post that may describe a freelance mission opportunity.
 
