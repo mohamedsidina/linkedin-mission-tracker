@@ -1,10 +1,13 @@
 """
 scraper/bereach_scraper.py — BeReach API LinkedIn post scraper.
 
-Runs two keyword queries in parallel via ThreadPoolExecutor, paginates each
+Runs all keyword queries from config in parallel via ThreadPoolExecutor, paginates each
 while hasMore is True (up to max_posts_per_country), normalizes results into
 RawPost dicts, applies a 24h safety filter, deduplicates by URL and text hash,
 saves raw JSON to disk, and returns the merged final list.
+
+Keywords are sent to BeReach as-is (no country suffix). Country filtering is
+handled downstream by Claude via the is_target_location field.
 """
 
 import logging
@@ -29,12 +32,6 @@ from scraper.linkedin_scraper import (
 _BASE_URL = "https://api.berea.ch"
 _ENDPOINT = "/search/linkedin/posts"
 
-# Country aliases for BeReach boolean queries (LinkedIn posts may use local names)
-_COUNTRY_ALIASES: Dict[str, str] = {
-    "France": "France",
-    "Morocco": "Maroc OR Morocco",
-}
-
 # Results per page (BeReach max is 50)
 _PAGE_SIZE = 50
 
@@ -49,15 +46,19 @@ def scrape_bereach(
     seen_hashes: Optional[Set[str]] = None,
 ) -> List[RawPost]:
     """
-    Fetch LinkedIn posts from the BeReach API using two parallel keyword queries.
+    Fetch LinkedIn posts from the BeReach API for all keywords in config.
 
-    Both queries run concurrently. Each paginates while hasMore is True or until
+    All queries run concurrently. Each paginates while hasMore is True or until
     max_posts_per_country is reached. Results are merged and deduplicated by URL
     and text hash (within-run and cross-run). Saves raw results to
     data/raw_posts_{YYYY-MM-DD}.json.
 
+    Keywords are sent to BeReach exactly as written in config — no country suffix
+    is appended. Country filtering is delegated to Claude (is_target_location field).
+
     Args:
-        config: Application configuration (provides bereach_api_token, max_posts_per_country).
+        config: Application configuration (provides bereach_api_token, search_keywords,
+                max_posts_per_country).
         logger: Logger instance.
         seen_urls: Optional set of post URLs already written in previous runs.
         seen_hashes: Optional set of text hashes already written in previous runs.
@@ -68,12 +69,8 @@ def scrape_bereach(
     seen_urls_global: Set[str] = seen_urls if seen_urls is not None else set()
     seen_hashes_global: Set[str] = seen_hashes if seen_hashes is not None else set()
 
-    # Build boolean queries from config: one per (keyword × country) pair
-    keyword_queries: List[str] = []
-    for kw in config.search_keywords:
-        for country in config.target_countries:
-            country_term = _COUNTRY_ALIASES.get(country, country)
-            keyword_queries.append(f'"{kw}" AND ({country_term})')
+    # Use keywords from config as-is — no country suffix
+    keyword_queries: List[str] = list(config.search_keywords)
 
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     headers = {

@@ -4,12 +4,10 @@
   ],
   "TARGET_COUNTRIES": ["France", "Morocco"],
   "SEARCH_KEYWORDS": [
-    "mission freelance",
-    "recherche freelance",
-    "freelance consultant",
-    "mission consultant indépendant",
-    "besoin freelance",
-    "TJM freelance"
+    "(\"mission\" OR \"besoin\") AND (\"freelance\" OR \"tjm\") AND (\"PMO\" OR \"chef de projet\")",
+    "(\"mission\" OR \"besoin\") AND (\"freelance\" OR \"tjm\") AND (\"itsm\" OR \"Run\")",
+    "(\"mission\" OR \"besoin\") AND (\"freelance\" OR \"tjm\") AND (\"business analyst\" OR \"Product Owner\")",
+    "(\"mission\" OR \"besoin\") AND (\"freelance\" OR \"tjm\") AND (\"ServiceNow\" OR \"Incident\")"
   ],
   "MIN_MATCH_SCORE": 40,
   "MAX_POSTS_PER_COUNTRY": 50,
