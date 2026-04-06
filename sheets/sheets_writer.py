@@ -448,14 +448,12 @@ def _create_config_tab(
     for country in config.target_countries:
         rows.append(["pays", country, ""])
 
-    rows.append(["# Mots-clés de recherche (max 6 requêtes)", "", ""])
-    keywords_padded = list(config.search_keywords) + [""] * 6
-    for kw in keywords_padded[:6]:
+    rows.append(["# Mots-clés de recherche (jusqu'à 10 requêtes)", "", ""])
+    for kw in config.search_keywords:
         rows.append(["keyword", kw, ""])
 
-    rows.append(["# Mots-clés Remote (max 6 requêtes full-remote)", "", ""])
-    remote_kw_padded = list(config.remote_keywords) + [""] * 6
-    for kw in remote_kw_padded[:6]:
+    rows.append(["# Mots-clés Remote (jusqu'à 10 requêtes full-remote)", "", ""])
+    for kw in config.remote_keywords:
         rows.append(["remote_keyword", kw, ""])
     rows.append(["remote_tab", config.remote_tab, ""])
 

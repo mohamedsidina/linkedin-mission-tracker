@@ -180,21 +180,43 @@ def main() -> None:
             len(enriched_posts), config.min_match_score,
         )
 
-        # Step 3c — Location filter: keep only posts where Claude flagged is_target_location=True
+        # Step 3c — Location filter
         before_loc = len(enriched_posts)
         kept, dropped = [], []
-        for p in enriched_posts:
-            (kept if p.get("is_target_location", True) else dropped).append(p)
-        for p in dropped:
+
+        if run_mode == "job":
+            # Remote pipeline: keep only posts that are truly location-independent
+            # (worker can be anywhere worldwide — no residency or onsite constraint).
+            for p in enriched_posts:
+                if p.get("truly_location_independent", True):
+                    kept.append(p)
+                else:
+                    dropped.append(p)
+                    logger.info(
+                        "[run] Remote filter DROP (not location-independent) — score=%.1f location='%s' url=%s",
+                        p.get("match_score", 0), p.get("location", ""), p.get("post_url", ""),
+                    )
             logger.info(
-                "[run] Location filter DROP — score=%.1f location='%s' url=%s",
-                p.get("match_score", 0), p.get("location", ""), p.get("post_url", ""),
+                "[run] Remote location filter: %d/%d posts kept (truly_location_independent=True).",
+                len(kept), before_loc,
             )
+        else:
+            # Freelance pipeline: keep posts where Claude flagged is_target_location=True
+            for p in enriched_posts:
+                if p.get("is_target_location", True):
+                    kept.append(p)
+                else:
+                    dropped.append(p)
+                    logger.info(
+                        "[run] Location filter DROP — score=%.1f location='%s' url=%s",
+                        p.get("match_score", 0), p.get("location", ""), p.get("post_url", ""),
+                    )
+            logger.info(
+                "[run] Location filter: %d/%d posts kept (target countries: %s).",
+                len(kept), before_loc, config.target_countries,
+            )
+
         enriched_posts = kept
-        logger.info(
-            "[run] Location filter: %d/%d posts kept (target countries: %s).",
-            len(enriched_posts), before_loc, config.target_countries,
-        )
 
         # Index dropped posts in Dedup_Index so they are not re-scraped/re-scored next run
         if dropped:

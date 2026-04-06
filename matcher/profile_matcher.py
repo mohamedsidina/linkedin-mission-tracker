@@ -207,6 +207,7 @@ class EnrichedPost(dict):
         profil_name: str           — name of the LinkedIn profile with best match
         scored_at: str             — ISO 8601 UTC
         is_target_location: bool   — True if mission is in France/Maroc/Remote/unknown
+        truly_location_independent: bool — True if role allows working from anywhere worldwide (no residency/onsite constraint)
     """
 
 
@@ -385,6 +386,8 @@ def score_posts(
                 language=claude_data.get("language", "FR"),
                 profil_name=claude_data.get("best_profil", profiles[0]["name"] if profiles else ""),
                 scored_at=scored_at,
+                is_target_location=claude_data.get("is_target_location", True),
+                truly_location_independent=claude_data.get("truly_location_independent", True),
             )
             enriched.append(enriched_post)
 
@@ -813,11 +816,12 @@ Set is_genuine_mission=true only when:
   full-remote role (CDI, CDD, or freelance contract)
 - The post describes a role to be filled (skills required, contract type, start date)"""
         geo_rule_section = """\
-## GEO RULE — is_target_location (evaluated AFTER scoring, independent of match_score):
+## GEO RULE — is_target_location + truly_location_independent:
 
 These search queries already contain "full remote" or "100% télétravail".
-Most posts will be remote-first. Apply this simplified geographic filter:
+Most posts will be remote-first. Apply the following rules:
 
+### is_target_location
 Set is_target_location=true when:
   → The role is explicitly fully remote (full remote, 100% télétravail, remote-first)
   → The employer is based in Europe or a France-adjacent francophone country
@@ -829,13 +833,32 @@ Set is_target_location=false when:
   → The post explicitly requires physical presence in the Americas or Asia-Pacific
   → The post explicitly states on-site only outside Europe
 
-SPECIAL RULE — if is_genuine_mission=false:
-  Always return is_target_location=true.
+SPECIAL RULE — if is_genuine_mission=false: always return is_target_location=true.
+
+### truly_location_independent
+This field determines if the role allows working from ANY country (e.g. Morocco) with
+no physical presence, no local-residency requirement, and no onsite obligation.
+
+Set truly_location_independent=true when:
+  → Role is "full remote", "100% remote", "work from anywhere", "fully distributed",
+    "remote worldwide", "globally remote", "async-first" with no location restriction
+  → No mention of required city, country of residence, or onsite visits
+  → No phrase indicating employer country residency is required
+    (e.g. no "based in France required", "must have right to work in France")
+
+Set truly_location_independent=false when:
+  → Post says "full remote" but explicitly restricts where the worker must be located
+    (e.g. "full remote en France", "must reside in France", "IDF only")
+  → Post mentions required occasional on-site days (e.g. "1 jour/mois sur site")
+  → Post specifies a strict timezone requirement (e.g. "CET timezone mandatory")
+  → Contract type legally requires local residency (e.g. CDI/portage in France)
+
+SPECIAL RULE — if is_genuine_mission=false: always return truly_location_independent=true.
 
 ANTI-HALLUCINATION RULES:
-  - A post written in French is NOT sufficient to conclude the role is France-based.
-  - Do not infer a timezone requirement from the author's profile location.
-  - When genuinely uncertain → return true (safety net)."""
+  - "full remote" alone (without a location restriction) → truly_location_independent=true
+  - A French-language post or a French employer is NOT sufficient to set false
+  - When genuinely uncertain → return true (safety net — do not discard opportunities)"""
     else:
         is_genuine_field_desc = (
             "boolean — TRUE only if a company/recruiter/ESN is SEEKING a freelancer. "
@@ -931,7 +954,8 @@ Respond with ONLY a valid JSON object — no preamble, no markdown fences, no ex
   "contact_info": "string or null — email or contact method from the post, null if none",
 {best_profil_field}  "match_score": "float 0-100 — match score for best_profil (must be 0 if is_genuine_mission=false)",
   "match_reasons": ["array of 3 strings — format defined in MATCH_REASONS FORMAT section below"],
-  "is_target_location": "boolean — see GEO RULE below"
+  "is_target_location": "boolean — see GEO RULE below",
+  "truly_location_independent": "boolean — see GEO RULE below (job mode only: true if worker can be anywhere worldwide with no onsite or residency requirement)"
 }}
 
 ## match_reasons format (required for all 3 entries):
@@ -1008,7 +1032,8 @@ Rationale: Mohamed applies for the project management component even if he lacks
     "MCO/exploitation ↔ background ITSM/Run dans le profil (vocabulary equivalence)",
     "Transformation SI ↔ digital transformation background (adjacent domain)"
   ],
-  "is_target_location": true
+  "is_target_location": true,
+  "truly_location_independent": false
 }}
 
 ## Example output (NOT a genuine mission — freelancer advertising themselves):
@@ -1024,7 +1049,8 @@ Rationale: Mohamed applies for the project management component even if he lacks
   "best_profil": "{profiles[0]['name']}",
   "match_score": 0,
   "match_reasons": ["Post is a freelancer advertising their own availability, not a mission offer"],
-  "is_target_location": true
+  "is_target_location": true,
+  "truly_location_independent": true
 }}"""
 
 
@@ -1078,6 +1104,14 @@ def _parse_claude_response(response_text: str, logger: logging.Logger) -> Dict[s
     else:
         data["is_target_location"] = True  # safe default: never drop on ambiguity
 
+    # Parse truly_location_independent — default True (safety net: don't miss opportunities)
+    raw_tli = data.get("truly_location_independent")
+    if isinstance(raw_tli, bool):
+        data["truly_location_independent"] = raw_tli
+    else:
+        raw_tli_str = str(raw_tli or "").lower()
+        data["truly_location_independent"] = raw_tli_str not in ("false", "0", "no", "non")
+
     return data
 
 
@@ -1106,5 +1140,6 @@ def _make_error_enrichment(profiles: List[Dict[str, str]]) -> Dict[str, Any]:
         "match_score": 0.0,
         "match_reasons": [],
         "language": "FR",
-        "is_target_location": True,  # safe default — error posts excluded by match_score=0
+        "is_target_location": True,          # safe default — error posts excluded by match_score=0
+        "truly_location_independent": True,  # safe default — error posts excluded by match_score=0
     }
