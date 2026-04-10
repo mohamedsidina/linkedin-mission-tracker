@@ -40,7 +40,7 @@ jobs:
         run: python run.py
 
       - name: Upload run logs
-        if: always()  # Upload even if the pipeline step failed — critical for debugging
+        if: always()  # Upload even if the pipeline step failed â€” critical for debugging
         uses: actions/upload-artifact@v4
         with:
           name: run-logs-${{ github.run_id }}
