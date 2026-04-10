@@ -1,125 +1,202 @@
 # Quick Start — New User Setup (~15 minutes)
 
-This guide walks you through setting up the LinkedIn Freelance Mission Tracker from scratch,
-starting from the Google Sheets template.
-
 ---
 
-## Step 1 — Create your Google Sheet
+## Step 1 — Copy the Google Sheets template
 
-1. Open the template: **[Google Sheets Template](https://docs.google.com/spreadsheets/d/e/2PACX-1vS4MfF5gNZ0lBo2PbGi2pvntAXCfv2mc11JpB5OsYUK7kjWiVSfH3JSU2BoYxx4Q-gYz7TwG23QoxGf/pubhtml)**
-2. Click **File → Make a copy** — this creates your own editable version
-3. From the URL of your copy (`https://docs.google.com/spreadsheets/d/**ID**/edit`), copy the spreadsheet **ID** — you'll need it in Step 5
+1. Open the template: **[Google Sheets Template →](https://docs.google.com/spreadsheets/d/e/2PACX-1vS4MfF5gNZ0lBo2PbGi2pvntAXCfv2mc11JpB5OsYUK7kjWiVSfH3JSU2BoYxx4Q-gYz7TwG23QoxGf/pubhtml)**
+2. Click **File → Make a copy** — this saves a copy to your Google Drive
+3. From the URL of your copy, copy the spreadsheet **ID**:
+   ```
+   https://docs.google.com/spreadsheets/d/  <<<THIS_PART>>>  /edit
+   ```
+   Save it — you'll use it as the `SPREADSHEET_ID` secret in Step 5.
 
-The template contains these tabs:
-
-| Tab | Your role |
-|-----|-----------|
-| `Paramètres` | Fill this in (Step 2) |
-| `Missions_YYYY-MM` | Leave empty — pipeline fills it |
-| `Remote_YYYY-MM` | Leave empty — pipeline fills it |
-| `Profils_Cache` | Leave empty — pipeline fills it automatically on first run |
-| `Dedup_Index` | Leave empty — pipeline fills it automatically |
+Leave all tabs empty except `Paramètres`. The pipeline fills everything else on first run.
 
 ---
 
 ## Step 2 — Fill in the Paramètres tab
 
-Open the `Paramètres` tab in your copy and fill in your information:
+The `Paramètres` tab is a **3-column table**. Each row is one config entry:
 
-| Row key | What to enter | Example |
-|---------|--------------|---------|
-| `profil` | Your LinkedIn **public** profile URL | `https://linkedin.com/in/john-doe/` |
-| `pays` | One target country per row | `France`, `Belgium` |
-| `keyword` | Boolean search queries for your role (one per row) | `"mission" AND "freelance" AND "PMO"` |
-| `remote_keyword` | Same format but for full-remote jobs | `"full remote" AND "PMO"` |
-| `score_minimum` | Min relevance score to keep posts (0-100) | `50` — raise once you see results |
-| `posts_max_par_pays` | Max posts processed per country per run | `50` |
+| Column A | Column B | Column C |
+|----------|----------|----------|
+| Key name | First value | Second value (profiles only) |
 
-> **Keyword tip**: Use LinkedIn boolean syntax — `AND`, `OR`, quoted phrases. The more specific, the better the signal-to-noise ratio. You can always adjust later directly in this tab without touching code.
+### Your LinkedIn profile (one row per profile, max 3)
 
-> **LinkedIn profile**: Must be a public profile. The pipeline uses the BeReach API to fetch it once on first run and caches the result — no repeated calls after that.
+| A | B | C |
+|---|---|---|
+| `profil` | `John Doe` ← your display name | `https://linkedin.com/in/john-doe/` ← full URL |
+
+> The URL must be a **public** LinkedIn profile — test by opening it in a private browser window without being logged in.
+
+### Target countries (one row per country)
+
+| A | B | C |
+|---|---|---|
+| `pays` | `France` | *(leave empty)* |
+| `pays` | `Belgium` | *(leave empty)* |
+
+Add as many `pays` rows as you want.
+
+### Search keywords — freelance missions (one row per query)
+
+| A | B | C |
+|---|---|---|
+| `keyword` | `"mission" AND "freelance" AND "PMO"` | *(leave empty)* |
+| `keyword` | `"besoin freelance" AND "chef de projet"` | *(leave empty)* |
+
+Use LinkedIn boolean syntax: `AND`, `OR`, quoted phrases for exact matches.
+
+### Search keywords — remote jobs (one row per query)
+
+| A | B | C |
+|---|---|---|
+| `remote_keyword` | `"full remote" AND "freelance" AND "PMO"` | *(leave empty)* |
+
+### Thresholds
+
+| A | B | C |
+|---|---|---|
+| `score_minimum` | `50` | *(leave empty)* |
+| `posts_max_par_pays` | `50` | *(leave empty)* |
+
+> **Tips**:
+> - Start with `score_minimum = 40` to see volume, raise once you calibrate
+> - You can edit this tab anytime — no code change needed, takes effect on next run
+> - Comment rows (starting with `#`) are ignored by the pipeline
 
 ---
 
 ## Step 3 — Get your API tokens
 
-You need accounts and tokens from 2 services:
+### BeReach API token
 
-| Token | Service | Where to get it |
-|-------|---------|----------------|
-| `BEREACH_API_TOKEN` | BeReach (post scraping + profile fetch) | [bereach.co](https://bereach.co) → dashboard → API |
-| `ANTHROPIC_API_KEY` | Claude AI (post scoring) | [console.anthropic.com](https://console.anthropic.com) → API Keys |
+BeReach scrapes LinkedIn posts and fetches LinkedIn profiles.
 
-> **BeReach**: A paid plan is recommended for daily scraping — the free tier has volume limits. BeReach handles both LinkedIn post scraping and LinkedIn profile fetching.
-> **Anthropic**: Claude Haiku is used for scoring — extremely cheap (~$1-5/month typical).
+1. Go to **[bereach.co](https://bereach.co)** → create an account
+2. Choose a plan (paid recommended for daily use — free tier has volume limits)
+3. After login: **Dashboard → API** or **Settings → API Tokens**
+4. Copy your token (long alphanumeric string)
+5. Save as `BEREACH_API_TOKEN`
+
+### Anthropic API key
+
+Claude Haiku scores posts against your profile. Cost: ~$1–5/month.
+
+1. Go to **[console.anthropic.com](https://console.anthropic.com)** → create an account
+2. **Billing** → add payment method (or redeem a credit)
+3. **API Keys → Create Key** → name it (e.g. `linkedin-tracker`) → **Create**
+4. Copy the key immediately — shown only once. Starts with `sk-ant-...`
+5. Save as `ANTHROPIC_API_KEY`
 
 ---
 
 ## Step 4 — Google Service Account (Sheets access)
 
-The pipeline writes to your Google Sheet using a service account. Follow these steps:
+No credit card needed — Google Sheets API is always free.
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com) — create or select a project
-2. Enable the **Google Sheets API**: *APIs & Services → Library → search "Google Sheets API" → Enable*
-3. Create a **Service Account**: *IAM & Admin → Service Accounts → Create Service Account* (any name, e.g. `sheets-writer`)
-4. Generate a **JSON key**: click your service account → *Keys → Add Key → Create new key → JSON* → a file downloads
-5. Convert the JSON key to a single escaped line (required for the `.env` / GitHub secret):
+### 4.1 — Create a Google Cloud project
+
+1. Go to **[console.cloud.google.com](https://console.cloud.google.com)**
+2. Click the project dropdown at top → **New Project** → name it (e.g. `linkedin-tracker`) → **Create**
+
+### 4.2 — Enable the Google Sheets API
+
+1. Left menu: **APIs & Services → Library**
+2. Search `Google Sheets API` → click it → **Enable**
+
+### 4.3 — Create a Service Account
+
+1. Left menu: **IAM & Admin → Service Accounts**
+2. **+ Create Service Account** → name: `sheets-writer` → **Create and Continue**
+3. Skip optional steps → **Done**
+
+### 4.4 — Generate a JSON key
+
+1. Click the service account → **Keys** tab → **Add Key → Create new key → JSON → Create**
+2. A `.json` file downloads — keep it safe
+
+### 4.5 — Convert the JSON to a single line
+
+GitHub secrets cannot contain newlines. Run:
 
 ```bash
 python -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(d))" service_account.json
 ```
 
-Copy the full output — it starts with `{"type":"service_account",...}`.
+Copy the output (one line, starts with `{"type":"service_account",...}`).
+This is your `GOOGLE_SERVICE_ACCOUNT_JSON` value.
 
-6. **Share your Google Sheet** with the `client_email` value from the JSON (looks like `xxx@yyy.iam.gserviceaccount.com`) as **Editor**
+### 4.6 — Share your Google Sheet with the service account
+
+1. Open your JSON file → find the `client_email` field:
+   ```
+   sheets-writer@your-project-123456.iam.gserviceaccount.com
+   ```
+2. Open your Google Sheet → **Share** → paste the email → role: **Editor** → **Send**
 
 ---
 
-## Step 5 — Fork the repo and set GitHub secrets
+## Step 5 — Fork the repo and add GitHub secrets
 
-1. **Fork** this repository on GitHub
-2. In your fork: *Settings → Secrets and variables → Actions → New repository secret*
-3. Add all 4 secrets:
+### 5.1 — Fork the repository
+
+Click **Fork** at the top of the repo page → select your GitHub account.
+
+### 5.2 — Create a "production" environment
+
+The workflows use `environment: production`. You must create it first:
+
+1. In your fork: **Settings → Environments → New environment**
+2. Name it exactly `production` → **Configure environment**
+3. Leave protection rules empty → **Save protection rules**
+
+### 5.3 — Add secrets to the environment
+
+In **Settings → Environments → production → Environment secrets → Add secret**:
 
 | Secret name | Value |
 |-------------|-------|
 | `BEREACH_API_TOKEN` | From Step 3 |
 | `ANTHROPIC_API_KEY` | From Step 3 |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | The single-line JSON output from Step 4.5 |
-| `SPREADSHEET_ID` | The spreadsheet ID from Step 1.3 |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | Single-line JSON from Step 4.5 |
+| `SPREADSHEET_ID` | Spreadsheet ID from Step 1 |
+
+> **Important**: Add secrets under **Environments → production**, not under the top-level "Actions secrets". The workflows read from the environment secret store.
 
 ---
 
 ## Step 6 — Trigger your first run
 
-1. In your fork, go to **Actions → daily_extract → Run workflow**
-2. Click **Run workflow** (green button)
+1. In your fork: **Actions → Daily LinkedIn Freelance Mission Extract**
+2. Click **Run workflow** (green button, top right)
 3. Wait 3–5 minutes
-4. Open your Google Sheet — check the **Missions** tab for results
+4. Open your Google Sheet → check the **Missions** tab
 
-> If the run fails, download the log artifact from the Actions run page and check the error message.
+> If it fails: click the failed run → download **run-logs** artifact → open the `.log` file for the exact error.
 
 ---
 
 ## What happens on first run
 
 ```
-Paramètres tab read         → your real config loaded (profile, countries, keywords)
+Paramètres tab read         → your config loaded (profile, countries, keywords)
 Profils_Cache checked       → empty → cache miss
 BeReach called              → your LinkedIn profile fetched once and cached
-Profile vector saved        → cached in Profils_Cache for all future runs
-Posts scraped (BeReach)     → for each target country × each keyword
-Posts scored (Claude)       → each post matched against your profile
+Posts scraped               → for each country × keyword pair
+Posts scored (Claude)       → each post matched against your profile (0–100)
 Results written             → Missions tab populated
-Dedup_Index updated         → prevents duplicates on future runs
+Dedup_Index updated         → prevents duplicates on all future runs
 ```
 
-## What happens on every subsequent run (daily, 06:00 UTC)
+## Subsequent runs (daily, 06:00 UTC)
 
 ```
-Profils_Cache hit           → no BeReach profile call → fast startup
-Dedup_Index checked         → only new posts processed (no duplicates)
+Profils_Cache hit           → no profile API call → fast startup
+Dedup_Index checked         → only new posts processed
 New results appended        → Missions tab grows daily
 ```
 
@@ -127,12 +204,13 @@ New results appended        → Missions tab grows daily
 
 ## Troubleshooting
 
-| Error / Symptom | Cause | Fix |
-|-----------------|-------|-----|
-| `Placeholder values detected` | Paramètres tab not filled | Complete Step 2 |
-| `APIError: 403` on Sheets | Sheet not shared | Share sheet with service account email (Step 4.6) |
-| `json.JSONDecodeError` | Malformed `GOOGLE_SERVICE_ACCOUNT_JSON` | Re-run the Python command in Step 4.5 |
-| 0 posts returned | Keywords too narrow or API issue | Check `logs/run_YYYY-MM-DD.log` in the Actions artifact |
-| Score always low | LinkedIn profile not fetched | Verify profile URL is public and correct in Paramètres |
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Placeholder values detected` | `profil` row not filled | Complete Step 2 — especially the `profil` row |
+| `KeyError: BEREACH_API_TOKEN` | Secret in wrong location | Secrets must be under **Environments → production**, not top-level Actions secrets |
+| `APIError: 403` on Sheets | Sheet not shared | Share with the `client_email` from JSON key (Step 4.6) |
+| `json.JSONDecodeError` | Newlines in JSON secret | Re-run the one-liner from Step 4.5 — output must be one line |
+| 0 posts returned | Keywords too narrow | Check log artifact; try broader keywords |
+| Score always 0 | Profile URL not public | Open the profile URL in a private browser — must be accessible without login |
 
-For the full troubleshooting table, see [README.md](README.md#troubleshooting).
+For more detail, see [README.md](README.md).
