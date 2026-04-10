@@ -7,22 +7,19 @@ starting from the Google Sheets template.
 
 ## Step 1 — Create your Google Sheet
 
-1. Create a **blank** Google Spreadsheet at [sheets.google.com](https://sheets.google.com)
-2. From the URL (`https://docs.google.com/spreadsheets/d/**ID**/edit`), copy the spreadsheet **ID** — you'll need it in Step 5
-3. The pipeline auto-creates all required tabs on first run — you only need to add the `Paramètres` tab manually:
-   - Click the **+** button at the bottom left to add a new tab
-   - Name it exactly `Paramètres`
-   - Fill it in as described in Step 2
+1. Open the template: **[Google Sheets Template](https://docs.google.com/spreadsheets/d/e/2PACX-1vS4MfF5gNZ0lBo2PbGi2pvntAXCfv2mc11JpB5OsYUK7kjWiVSfH3JSU2BoYxx4Q-gYz7TwG23QoxGf/pubhtml)**
+2. Click **File → Make a copy** — this creates your own editable version
+3. From the URL of your copy (`https://docs.google.com/spreadsheets/d/**ID**/edit`), copy the spreadsheet **ID** — you'll need it in Step 5
 
-The pipeline will automatically create these additional tabs on first run:
+The template contains these tabs:
 
-| Tab | Created by |
+| Tab | Your role |
 |-----|-----------|
-| `Paramètres` | **You** (Step 2 below) |
-| `Missions_YYYY-MM` | Pipeline — monthly tab for scored missions |
-| `Remote_YYYY-MM` | Pipeline — monthly tab for remote jobs |
-| `Profils_Cache` | Pipeline — caches your LinkedIn profile vector |
-| `Dedup_Index` | Pipeline — cross-run deduplication index |
+| `Paramètres` | Fill this in (Step 2) |
+| `Missions_YYYY-MM` | Leave empty — pipeline fills it |
+| `Remote_YYYY-MM` | Leave empty — pipeline fills it |
+| `Profils_Cache` | Leave empty — pipeline fills it automatically on first run |
+| `Dedup_Index` | Leave empty — pipeline fills it automatically |
 
 ---
 
