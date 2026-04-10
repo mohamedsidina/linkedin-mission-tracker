@@ -1,0 +1,8 @@
+# Force LF line endings for workflow files — CRLF breaks GitHub Actions YAML parser
+.github/workflows/*.yml text eol=lf
+
+# Force LF for all Python files
+*.py text eol=lf
+
+# Force LF for shell scripts
+*.sh text eol=lf
