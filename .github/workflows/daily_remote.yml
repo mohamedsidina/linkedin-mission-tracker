@@ -5,7 +5,7 @@ on:
     # 06:30 UTC daily = 30 min after the freelance pipeline (avoids dedup race)
     - cron: '30 6 * * *'
   workflow_dispatch:
-    # Allows manual trigger from the GitHub Actions UI for testing
+    # Allows manual trigger from GitHub Actions UI
 
 env:
   PYTHON_VERSION: '3.11'
