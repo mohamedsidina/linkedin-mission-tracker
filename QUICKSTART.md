@@ -171,12 +171,24 @@ In **Settings → Environments → production → Environment secrets → Add se
 
 ## Step 6 — Trigger your first run
 
-1. In your fork: **Actions → Daily LinkedIn Freelance Mission Extract**
-2. Click **Run workflow** (green button, top right)
-3. Wait 3–5 minutes
-4. Open your Google Sheet → check the **Missions** tab
+There are **two workflows** to trigger manually on first run:
 
-> If it fails: click the failed run → download **run-logs** artifact → open the `.log` file for the exact error.
+**Workflow 1 — Freelance missions**
+
+1. In your fork, click the **Actions** tab (top navigation bar of your repo)
+2. In the left sidebar, click **Daily LinkedIn Freelance Mission Extract**
+3. On the right side, click **Run workflow** → **Run workflow** (green button)
+4. Wait 3–5 minutes → open your sheet → check the **Missions_YYYY-MM** tab
+
+**Workflow 2 — Remote jobs**
+
+1. Still in **Actions**, click **Daily LinkedIn Remote Job Extract** in the left sidebar
+2. Click **Run workflow** → **Run workflow** (green button)
+3. Wait 3–5 minutes → check the **Remote_YYYY-MM** tab in your sheet
+
+> After the first run, both workflows run automatically every day (06:00 and 06:30 UTC). You only need to trigger them manually once.
+
+> If a run fails: click the failed run → scroll down → download the **run-logs** artifact → open the `.log` file for the exact error.
 
 ---
 
